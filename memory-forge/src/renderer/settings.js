@@ -94,14 +94,25 @@ function renderDetect() {
 
   const rows = [
     ['安装状态', r.installed,
-      r.installed ? `已安装${r.version ? `（版本 ${r.version}）` : ''}` : '未检测到 ~/.hermes 目录'],
+      r.installed
+        ? `已安装${r.version ? `（版本 ${r.version}）` : ''}${r.configVersion ? `　配置版本 ${r.configVersion}` : ''}`
+        : '未检测到 hermes 数据目录',
+      r.installed],
+    ['数据目录', r.homeDir, '', true],
     ['配置文件', r.configExists ? r.configPath : `${r.configPath}（尚未创建）`,
       r.configExists ? '' : '首次配置时会自动创建', r.configExists],
-    ['MCP 注册', r.registered ? '已注册 memory_forge' : '未注册',
+    ['MCP 注册', r.registered
+      ? `已注册${r.registeredTools ? `（暴露 ${r.registeredTools} 个工具）` : '（全部工具）'}`
+      : '未注册',
       '', r.registered],
-    ['工具前缀', r.toolPrefix, '', true],
-    ['重载方式', r.reloadHint, '', true],
   ];
+
+  if (r.executable) {
+    rows.push(['hermes 可执行', r.executable, '', true]);
+  }
+
+  rows.push(['工具前缀', r.toolPrefix, '', true]);
+  rows.push(['重载方式', r.reloadHint, '', true]);
 
   rows.forEach(([label, value, note, ok]) => {
     const row = el('div', 'detect-row');

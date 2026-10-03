@@ -359,8 +359,16 @@ class McpClient {
 
   const snippet = adapter.buildConfigSnippet('hermes', { serverPath: SERVER });
   ok('生成配置片段', snippet.snippet.includes('memory_forge:'));
-  ok('配置含 command', snippet.snippet.includes('command: "node"'));
+  // command 用 node 的绝对路径而非裸 'node'：hermes 启动 stdio 子进程时
+  // 只传受限环境变量，托管运行时通常不在 PATH 里，写裸名字会启动失败
+  ok('配置含 command', /command:\s*['"].*node(\.exe)?['"]/.test(snippet.snippet),
+    snippet.snippet.split('\n')[1]);
+  ok('command 用绝对路径（避免 PATH 受限）',
+    !/command:\s*['"]node(\.exe)?['"]/.test(snippet.snippet));
+  ok('command 用单引号（避开 YAML 反斜杠转义）',
+    /command:\s*'/.test(snippet.snippet));
   ok('配置含 args 指向 server', snippet.snippet.includes('forge-mcp.js'));
+  ok('args 用双引号且路径为正斜杠', /args:\s*\["[^"]*forge-mcp\.js"\]/.test(snippet.snippet));
   ok('配置含 enabled', snippet.snippet.includes('enabled: true'));
   ok('完整片段含 mcp_servers', snippet.full.startsWith('mcp_servers:'));
 
@@ -370,7 +378,9 @@ class McpClient {
 
   const detect = adapter.detectAgent('hermes');
   ok('检测返回 ok', detect.ok === true);
-  ok('给出配置路径', detect.configPath.includes('.hermes'));
+  // hermes 数据目录在 Windows 上是 %LOCALAPPDATA%\hermes，不是 ~/.hermes
+  ok('给出配置路径', /hermes[/\\]config\.yaml$/.test(detect.configPath),
+    detect.configPath);
   ok('给出工具前缀', detect.toolPrefix === 'mcp__memory_forge__');
   ok('给出重载提示', detect.reloadHint.includes('/reload-mcp'));
   ok('给出文档链接', (detect.docsUrl || '').includes('hermes'));
@@ -378,6 +388,51 @@ class McpClient {
 
   const badAgent = adapter.detectAgent('不存在的agent');
   ok('未知 agent 被拒', badAgent.ok === false);
+
+  // --- Windows 场景（本次真实适配发现的问题）---
+  section('Windows 路径与 YAML');
+
+  // hermes 数据目录：Windows 上是 %LOCALAPPDATA%\hermes，不是 ~/.hermes
+  const winHome = adapter.hermesHome();
+  ok('hermesHome 按平台返回正确位置',
+    process.platform === 'win32'
+      ? winHome.includes('AppData') && winHome.endsWith('hermes')
+      : winHome.endsWith('.hermes'),
+    winHome);
+
+  // YAML 双引号里反斜杠是转义符 —— Windows 路径必须用单引号
+  const winSnippet = adapter.buildConfigSnippet('hermes', {
+    serverPath: 'C:\\x\\forge-mcp.js',
+    nodePath: 'C:\\Program Files\\nodejs\\node.exe',
+  });
+  ok('command 用单引号包裹', /command:\s*'C:\\Program Files\\nodejs\\node\.exe'/.test(winSnippet.snippet),
+    winSnippet.snippet.split('\n')[1]);
+  ok('单引号内保留反斜杠（原生路径）', winSnippet.snippet.includes('C:\\Program Files'));
+
+  // 生成的 YAML 不能有非法转义（双引号里的 \U 之类会让整个配置解析失败）
+  ok('生成的片段无非法 YAML 转义', (() => {
+    const quoted = winSnippet.snippet.match(/"[^"]*"/g) || [];
+    const illegal = quoted.filter((s) => {
+      // 双引号串里只允许 \" \\ \n \t \u \x 等转义
+      const re = /\\(.)/g;
+      let m;
+      while ((m = re.exec(s)) !== null) {
+        if (!'"\\nrtu xabfv0'.includes(m[1])) return true;
+      }
+      return false;
+    });
+    return illegal.length === 0;
+  })());
+
+  // command 必须是绝对路径：hermes 只传受限环境变量，托管运行时不在 PATH
+  ok('command 为绝对路径', /command:\s*'[^']*[\\/]/.test(winSnippet.snippet));
+  ok('解析出的 node 路径可用', (() => {
+    const np = adapter.resolveNodePath();
+    return np === 'node' || require('fs').existsSync(np);
+  })(), adapter.resolveNodePath());
+  ok('resolveNodePath 优先当前进程的解释器',
+    adapter.resolveNodePath() === process.execPath
+    || adapter.resolveNodePath() === 'node');
 
   const badInstall = adapter.installConfig('hermes', { serverPath: path.join(WORKSPACE, '不存在.js') });
   ok('安装时校验 server 存在', badInstall.ok === false && /不存在/.test(badInstall.error));
@@ -406,7 +461,8 @@ class McpClient {
     const after2 = fs.readFileSync(cfgPath, 'utf8');
     ok('★ 未破坏原有配置', after2.includes('filesystem:') && after2.includes('server-fs'));
     ok('★ 原有缩进保持', /  filesystem:\n    command: "npx"/.test(after2));
-    ok('★ 新条目缩进正确', /\n  memory_forge:\n    command: "node"/.test(after2));
+    ok('★ 新条目缩进正确', /\n  memory_forge:\n    command:\s*['"]/.test(after2),
+      after2.split('\n').slice(1, 4).join(' | '));
 
     // 场景 C：重复安装 → 更新而非重复
     const inst3 = adapter.installConfig('hermes', { serverPath: SERVER });

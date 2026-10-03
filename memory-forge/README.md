@@ -59,22 +59,33 @@ npm test            # 全部 522 项测试
 
 工具名语义化到可以直接当自然语言用，比如 `forge_read_chunk`。
 
-### 接入 hermes（三步）
+### 接入 hermes
 
-GUI 里点「自动写入配置」即可，也可以手动把配置片段加到 `~/.hermes/config.yaml`：
+GUI 里点「自动写入配置」即可，也可以手动加到 `config.yaml`：
 
 ```yaml
 mcp_servers:
   memory_forge:
-    command: "node"
-    args: ["/绝对路径/memory-forge/bin/forge-mcp.js"]
+    command: 'C:\Users\<你>\.workbuddy\binaries\node\versions\<版本>\node.exe'
+    args: ["C:/path/to/memory-forge/bin/forge-mcp.js"]
     enabled: true
     timeout: 300
 ```
 
 然后在 hermes 会话里执行 `/reload-mcp`，用 `hermes mcp list` 确认连接。
 
-工具会以 `mcp__memory_forge__<name>` 的形式出现在 Agent 工具列表里。
+**注意 command 用单引号**：YAML 双引号里反斜杠是转义符，`C:\Users` 的 `\U` 不是合法转义序列，会让整个 `config.yaml` 解析失败。args 用双引号 + 正斜杠，无此问题。
+
+**command 必须是绝对路径**：hermes 启动 stdio 子进程时只传受限环境变量（PATH/HOME/LANG 等），托管运行时或版本管理器里的 node 通常不在系统 PATH 里，写裸 `node` 会启动失败。工具会自动定位当前进程的解释器并写入绝对路径。
+
+### hermes 数据目录（跨平台）
+
+| 平台 | 位置 |
+|---|---|
+| Linux / macOS | `~/.hermes/` |
+| Windows | `%LOCALAPPDATA%\hermes\`（即 `AppData/Local/hermes/`） |
+
+Windows 上 `AppData/Roaming/hermes` 是 Electron 运行时数据（Cache/Preferences），**不是配置目录**。检测逻辑已按平台区分，实机验证过。
 
 ### 12 个工具
 
@@ -110,14 +121,28 @@ Agent：（自动调用 forge_probe_start 勘察格式）
 
 ### 配置写入是安全的
 
-写 `~/.hermes/config.yaml` 时用**文本级最小插入**，不做「解析 YAML → 修改 → 序列化」：
+写 hermes 的 `config.yaml` 时用**文本级最小插入**，不做「解析 YAML → 修改 → 序列化」：
 
 - 不引入 yaml 依赖
 - 任何序列化差异都不会改写用户的其他配置
 - 逐行锚定条目边界，重复安装是更新而非追加
 - 自动备份为 `.forge-backup`
 
-测试覆盖了 6 种场景：新建、追加到已有段、重复安装、无 `mcp_servers` 段、备份、卸载——每种都验证了**原有配置未被破坏**。
+测试覆盖了 6 种场景：新建、追加到已有段、重复安装、无 `mcp_servers` 段、备份、卸载——每种都验证了**原有配置未被破坏**。实机在 2323 行的真实配置上验证过：写入后原有 11 个顶层键全部完好，只新增 7 行。
+
+### 实机验证
+
+`scripts/verify-with-hermes.js` 模拟 hermes 的 stdio 子进程行为做端到端验证：用**配置文件里的 command** 启动、只传受限环境变量、走真实 JSON-RPC。
+
+```
+command: C:\Users\Holly\.workbuddy\binaries\node\versions\22.22.2-3\node.exe
+args[0]: .../memory-forge/bin/forge-mcp.js
+
+PASS  受限环境下 initialize 成功
+PASS  受限环境下 tools/list 成功
+PASS  12 个工具全部注册
+PASS  工具名前缀正确
+```
 
 ---
 
@@ -689,6 +714,9 @@ MCP 集成测试走**真实 JSON-RPC over stdio**（不用内部调用绕过协�
 
 | 缺陷 | 症状 | 根因 |
 |---|---|---|
+| **YAML 转义致配置损坏** | Windows 下写入的 `command: "C:\Users\..."` 让整个 config.yaml 解析失败 | 双引号里反斜杠是转义符，`\U` 非法。改用单引号 |
+| **hermes 路径判定错误** | Windows 上误报「未安装」，实际已装 | 数据目录是 `%LOCALAPPDATA%\hermes`，不是 `~/.hermes` |
+| **command 写裸 node 会启动失败** | MCP server 无响应 | hermes 只传受限环境变量，托管运行时不���系统 PATH |
 | **多文件分块索引撞车** | 第二个文件的 chunk 0 结果被覆盖，数据静默丢失 | `chunkRecords` 对每个文件独立调用，index 都从 0 开始 |
 | **MCP 工具全部调不到** | `tools/list` 列出了工具但调用报「未知工具」 | 实现用短名 `probe_start`，声明用 `forge_probe_start`，前缀不匹配 |
 | **配置更新吃掉其他条目** | 再次安装 memory_forge 时把 filesystem 条目删了 | 替换正则 `(?:[ \t]+.*\n)*` 贪婪匹配跨越了兄弟条目 |
@@ -701,6 +729,8 @@ MCP 集成测试走**真实 JSON-RPC over stdio**（不用内部调用绕过协�
 | 数组路径取值过度 | `content`、`a.b.c`、`tags` 全返回 null | `pickPath` 把不带 `[]` 的路径也当数组展开 |
 | CSV 表头被当数据 | 抽取阶段多出一条「表头是 xxx」的无用记忆 | `splitCsv` 把表头行 push 进了 records |
 | `collectStrings` 类型错误 | JSON 解析抛 `skip.has is not a function` | 传了数组而非 Set |
+
+**前三条是实机适配 hermes 时才发现的** —— 文档里写的是 `~/.hermes`，而 Windows 上根本不是那个路径。这些问题靠读文档发现不了，只能真装一遍。
 
 ---
 

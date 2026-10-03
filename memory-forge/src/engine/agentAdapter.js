@@ -26,6 +26,27 @@ const path = require('path');
 
 const SERVER_NAME = 'memory_forge';
 
+/**
+ * hermes 数据目录的候选位置。
+ *
+ * 各平台布局不同，不能只认 ~/.hermes：
+ *   Linux / macOS : ~/.hermes
+ *   Windows       : %LOCALAPPDATA%\hermes  （Roaming\hermes 是 Electron 运行时数据，
+ *                                             里面只有 Cache/Preferences，不是配置）
+ *
+ * 实际在 Windows 上验证过：配置在 %LOCALAPPDATA%\hermes\config.yaml。
+ * 早期只查 ~/.hermes，在 Windows 上会误报「未安装」。
+ */
+function hermesHome() {
+  const home = os.homedir();
+  if (process.platform === 'win32') {
+    const localAppData = process.env.LOCALAPPDATA
+      || path.join(home, 'AppData', 'Local');
+    return path.join(localAppData, 'hermes');
+  }
+  return path.join(home, '.hermes');
+}
+
 // --- Agent 适配器注册表 -------------------------------------------------
 
 const ADAPTERS = {
@@ -34,7 +55,13 @@ const ADAPTERS = {
     label: 'Hermes Agent',
     status: '研发适配中',
     mcpSupport: true,
-    configPath: () => path.join(os.homedir(), '.hermes', 'config.yaml'),
+    homeDir: hermesHome,
+    configPath: () => path.join(hermesHome(), 'config.yaml'),
+    // Windows 上 hermes.exe 的实际位置，用于生成 PATH 或直接调用
+    executable: () => {
+      const exe = path.join(hermesHome(), 'bin', 'hermes.exe');
+      return fs.existsSync(exe) ? exe : null;
+    },
     serverName: SERVER_NAME,
     // hermes 的工具名清洗规则：连字符与点替换为下划线
     toolPrefix: 'mcp__memory_forge__',
@@ -56,19 +83,16 @@ function detectAgent(agentKey) {
   const adapter = ADAPTERS[agentKey];
   if (!adapter) return { ok: false, error: `未知的 agent 类型 ${agentKey}` };
 
+  const homeDir = adapter.homeDir();
   const configPath = adapter.configPath();
-  const home = os.homedir();
-  const hermesHome = path.join(home, '.hermes');
-
-  const exists = fs.existsSync(hermesHome);
   const configExists = fs.existsSync(configPath);
-  let installed = false;
-  let version = null;
+  const homeExists = fs.existsSync(homeDir);
 
-  // 从可能的安装位置推断版本
+  // 版本：hermes-agent/ 下可能有源码，从 pyproject 读
+  let version = null;
   const candidates = [
-    path.join(hermesHome, 'hermes-agent', 'pyproject.toml'),
-    path.join(hermesHome, 'pyproject.toml'),
+    path.join(homeDir, 'hermes-agent', 'pyproject.toml'),
+    path.join(homeDir, 'pyproject.toml'),
   ];
   for (const p of candidates) {
     if (!fs.existsSync(p)) continue;
@@ -78,45 +102,140 @@ function detectAgent(agentKey) {
       if (m) { version = m[1]; break; }
     } catch (_) { /* 读不到就跳过 */ }
   }
-  installed = exists;
-
-  let registered = false;
+  // 退而求其次：config.yaml 里的 _config_version 说明来自哪个版本
+  let configVersion = null;
   if (configExists) {
     try {
-      registered = hasEntry(fs.readFileSync(configPath, 'utf8'));
+      const txt = fs.readFileSync(configPath, 'utf8');
+      const m = txt.match(/^_config_version:\s*(\d+)/m);
+      if (m) configVersion = Number(m[1]);
+    } catch (_) { /* 忽略 */ }
+  }
+
+  let registered = false;
+  let registeredTools = 0;
+  if (configExists) {
+    try {
+      const txt = fs.readFileSync(configPath, 'utf8');
+      registered = hasEntry(txt);
+      const entry = findEntry(txt);
+      if (entry) {
+        const block = txt.split('\n').slice(entry.start, entry.end).join('\n');
+        const inc = block.match(/include:\s*\[([^\]]*)\]/);
+        if (inc) {
+          registeredTools = inc[1].split(',')
+            .map((s) => s.trim().replace(/^["']|["']$/g, ''))
+            .filter(Boolean).length;
+        }
+      }
     } catch (_) { /* 读不到配置视为未注册 */ }
   }
+
+  const exe = adapter.executable ? adapter.executable() : null;
 
   return {
     ok: true,
     agent: agentKey,
     label: adapter.label,
-    installed,
+    status: adapter.status,
+    installed: homeExists || !!exe,
+    homeDir,
     version,
+    configVersion,
     configPath,
     configExists,
     registered,
+    registeredTools,
+    executable: exe,
     reloadHint: adapter.reloadHint,
     notes: adapter.notes,
     docsUrl: adapter.docsUrl,
     toolPrefix: adapter.toolPrefix,
+    // Windows 上 PATH 里通常没有 hermes，调用时需要用绝对路径
+    executableOnPath: false,
   };
+}
+
+/**
+ * 找出可用于 stdio 子进程的 node 可执行文件。
+ *
+ * 为什么需要这个：hermes 启动 stdio 子进程时只传「安全变量」
+ * （PATH、HOME、LANG 等）。在 Windows 上，如果 node 来自某个
+ * 不在系统 PATH 的托管运行时目录（版本管理器、包管理器沙箱等），
+ * 子进程就会因为找不到 node 而启动失败 —— 表现是 MCP server 无响应。
+ * 所以这里直接定位 node 的绝对路径写进配置。
+ */
+function resolveNodePath() {
+  // 1) 当前进程用的 node 就是最可靠的答案
+  if (process.execPath && /node(\.exe)?$/i.test(process.execPath)) {
+    return process.execPath;
+  }
+  // 2) 环境变量里显式指定的
+  if (process.env.FORGE_NODE && fs.existsSync(process.env.FORGE_NODE)) {
+    return process.env.FORGE_NODE;
+  }
+  // 3) Windows 上常见的安装位置
+  if (process.platform === 'win32') {
+    const guesses = [
+      path.join(process.env.ProgramFiles || 'C:\\Program Files', 'nodejs', 'node.exe'),
+      path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'nodejs', 'node.exe'),
+      path.join(process.env.APPDATA || '', 'npm', 'node.exe'),
+      path.join(process.env.LOCALAPPDATA || '', 'Programs', 'nodejs', 'node.exe'),
+      // 托管运行时布局（本机开发环境即是此形态）
+      path.join(os.homedir(), '.workbuddy', 'binaries', 'node', 'versions'),
+    ];
+    for (const g of guesses) {
+      if (fs.existsSync(g)) {
+        if (fs.statSync(g).isFile()) return g;
+        // 目录 → 找最新的版本子目录
+        try {
+          const subs = fs.readdirSync(g)
+            .map((n) => path.join(g, n))
+            .filter((p) => fs.statSync(p).isDirectory())
+            .sort();
+          for (let i = subs.length - 1; i >= 0; i--) {
+            const exe = path.join(subs[i], 'node.exe');
+            if (fs.existsSync(exe)) return exe;
+          }
+        } catch (_) { /* 继续找下一个 */ }
+      }
+    }
+  }
+  // 4) 退回 'node'，赌它在 PATH 里
+  return 'node';
+}
+
+/**
+ * YAML 标量字符串。
+ *
+ * 不用双引号：双引号里反斜杠是转义符，Windows 路径的 `C:\Users`
+ * 里的 `\U` 不是合法转义序列，会让整个 config.yaml 解析失败。
+ *
+ * 也不用双引号的另一个考虑：Node 的 spawn 在 Windows 上对正斜杠路径
+ * 可用，但对需要按原生路径分隔符查找依赖 DLL 的可执行文件可能报 ENOENT。
+ * 单引号包裹保留原样反斜杠，既避开 YAML 转义，又不给 spawn 添麻烦。
+ *
+ * 单引号 YAML 里唯一需要转义的是单引号本身（写成两个）。
+ */
+function yamlStr(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
 }
 
 /**
  * 生成 hermes 的 MCP 配置片段。
  * 给界面展示 + 一键写入都用它，避免两处生成逻辑不一致。
  */
-function buildConfigSnippet(agentKey, { serverPath, toolFilter = null } = {}) {
+function buildConfigSnippet(agentKey, { serverPath, toolFilter = null, nodePath = null } = {}) {
   const adapter = ADAPTERS[agentKey];
   if (!adapter) return null;
 
-  const p = serverPath || path.join(__dirname, 'forge-mcp.js');
+  const p = serverPath || path.join(__dirname, '..', '..', 'bin', 'forge-mcp.js');
+  const node = nodePath || resolveNodePath();
 
   const lines = [
     `  ${adapter.serverName}:`,
-    `    command: "node"`,
-    `    args: ["${p.replace(/\\/g, '/')}"]`,
+    `    command: ${yamlStr(node)}`,
+    `    args: ["${String(p).replace(/\\/g, '/')}"]`,
     `    enabled: true`,
     `    timeout: 300`,
   ];
@@ -126,7 +245,12 @@ function buildConfigSnippet(agentKey, { serverPath, toolFilter = null } = {}) {
     lines.push(`      include: [${toolFilter.map((t) => JSON.stringify(t)).join(', ')}]`);
   }
 
-  return { snippet: lines.join('\n'), full: `mcp_servers:\n${lines.join('\n')}`, serverPath: p };
+  return {
+    snippet: lines.join('\n'),
+    full: `mcp_servers:\n${lines.join('\n')}`,
+    serverPath: p,
+    nodePath: node,
+  };
 }
 
 /**
@@ -358,4 +482,6 @@ function selfTest(serverPath, timeoutMs = 8000) {
 module.exports = {
   ADAPTERS, SERVER_NAME,
   detectAgent, buildConfigSnippet, installConfig, uninstallConfig, selfTest,
+  // 供验证脚本与测试复用
+  hermesHome, resolveNodePath, findEntry, hasEntry,
 };
