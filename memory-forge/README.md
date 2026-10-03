@@ -4,7 +4,7 @@
 
 面向的场景：你手里有一堆杂乱的 Agent 记忆（Markdown 笔记、对话导出、JSON 配置、日志、纯文本片段），想迁入 [memory-palace](../memory-palace) 那套结构化体系，但又不想手工整理。
 
-**内置大语言模型能力**，支持本地 Ollama（无需密钥、数据不出本机）与云端 API。
+**内置大语言模型能力** —— 默认交给当前 agent 执行，**无需配置任何模型或 API Key**。
 
 **两种运行模式**：
 - **完整模式** — 处理你选定的文件，全量输出并可导出
@@ -16,9 +16,10 @@
 
 | | |
 |---|---|
+| **零配置** | 不需要装模型、不需要 API Key。抽取交给当前 agent 用它自己的模型完成 |
+| **两种执行方式** | 默认 agent 驱动；也可直连 Ollama / OpenAI 兼容端点 / Claude |
 | **格式不限** | Markdown / 纯文本 / JSON / JSONL / 日志，自动识别，每条记录保留来源位置 |
 | **浅尝模式** | 从真实记忆库抽样试运行，全程只读，确认后再转全量 |
-| **本地优先** | Ollama 本地模型，数据不出本机；也支持 OpenAI 兼容端点与 Claude |
 | **冲突可见** | 与已有记忆库对比，同一 slot 的矛盾会被检出并要求你裁决，不自动决定 |
 | **格式可靠** | 输出与 memory-palace 的 schema 严格对齐，导出的文件可被 CLI 直接读取 |
 | **可追溯** | 每张卡片记录来自哪个文件、哪个片段 |
@@ -29,9 +30,8 @@
 
 ```bash
 npm install
-./start.sh          # 推荐：自动处理环境问题（见下）
-npm start           # 或直接用 electron
-npm test            # 全部 242 项测试
+./start.sh          # 启动 GUI
+npm test            # 全部 302 项测试
 ```
 
 **建议用 `start.sh`**。它处理两个常见障碍：
@@ -39,7 +39,123 @@ npm test            # 全部 242 项测试
 - `ELECTRON_RUN_AS_NODE=1` 被环境预设时，Electron 会退化成纯 Node 运行时，报 `Cannot read properties of undefined (reading 'whenReady')`。这个变量在 Electron 启动**前**就被读取，主进程代码无法补救，只能由启动脚本剥离。
 - 无显示环境（服务器 / 容器 / 远程会话）会崩在 `GPU process isn't usable`，脚本自动降级为软件渲染。
 
-首次使用建议先探测模型：进入第 3 步点「探测可用模型」。若本机装了 Ollama，会自动列出可用模型并选中一个。
+首次使用建议直接体验 agent 模式：进入第 3 步点「生成任务包」，把生成的指令粘给你的 agent 即可。
+如果你更想走自建模型，第 3 步右上角可切到「直连模型 API」，点「探测可用模型」会自动列出 Ollama 已安装的模型。
+
+---
+
+## Agent 驱动模式（推荐）
+
+### 为什么这样设计
+
+原方案要求你自己准备模型端点与 API Key。这是整个工具里门槛最高的一环：
+装模型、配 endpoint、填 Key、调并发 —— 任何一步不通就卡住。
+
+但你已经在跟一个 agent 打交道了，那个 agent 本身就带着模型能力，何必再折腾一遍。
+
+所以把职责切开：
+
+```
+agent 负责「理解」 —— 从文本里判断什么值得长期记住
+引擎负责「机械」 —— 解析、切分、schema 校验、去重、冲突检测、导出
+```
+
+这条边界很重要：**判断交给 agent，但凡是能确定性完成的部分一律不外包**，
+否则结果不可复现，也无法审计。
+
+### 命令行用法（agent 更适合）
+
+CLI 是给 agent 准备的主路径 —— agent 用 shell 比驱动 GUI 可靠得多，
+可以一次跑完「生成任务包 → 逐块读取 → 写出结果 → 导入」，
+中途失败也能精确重跑某一步。
+
+```bash
+# 1. 生成任务包
+node bin/forge.js task notes.md chat.log --out ./task1
+
+# 2. 读 ./task1/INSTRUCTIONS.md，按里面规范逐块处理
+#    读 ./task1/chunks/*.md，结果写进 ./task1/results/*.result.json
+
+# 3. 导入（不写盘，先看统计）
+node bin/forge.js import ./task1
+
+# 4. 确认无误后写入记忆库
+node bin/forge.js import ./task1 --write ~/memory-palace
+```
+
+辅助命令：
+
+```bash
+forge status ./task1                                        # 看进度，支持分批处理
+forge validate ./task1/results/001-notes.result.json       # 单独校验一个结果文件
+forge types                                                 # 列出类型与字段要求
+forge task --trial --palace ~/memory-palace --count 20 --out ./trial1   # 浅尝模式
+forge import ./task1 --json                                 # JSON 输出，便于程序处理
+```
+
+`--write` 缺省时**不写任何文件**，只做校验与统计。写盘前会先告诉你卡片数、去重数、冲突数。
+
+### GUI 用法
+
+第 3 步默认就是「交给 Agent 处理」：
+
+1. **生成任务包** —— 点一下，工具切好分块并生成抽取规范
+2. **交给 Agent** —— 界面给出一段现成的指令，点「复制指令」粘给你的 agent
+3. **导入结果** —— agent 写完 `results/` 后回到这里导入
+
+也可以切到「直连模型 API」走原来的路径。
+
+### 任务包结构
+
+```
+task1/
+├── INSTRUCTIONS.md       抽取规范（agent 读这个）
+├── manifest.json         分块清单、任务 ID、进度基准
+├── ALL.md                所有分块合并（想一次读完的 agent 用）
+├── chunks/
+│   ├── 001-notes.md      单块原文，带 record 定位
+│   └── 002-chat.md
+└── results/
+    ├── 001-notes.result.json    ← agent 写这里
+    └── 002-chat.result.json
+```
+
+### 为什么分块存放
+
+agent 有上下文限制，几千条记忆不可能一次读完。分块让 agent 能：
+
+- 一次处理一块，串行推进
+- 中断后从断点继续（`forge status` 看清哪些块已完成）
+- 只重跑失败的那几块，不必全量重来
+
+### agent 输出的容错
+
+agent 不会严格照搬格式，实际会遇到的偏差都做了吸收：
+
+| 偏差 | 处理 |
+|---|---|
+| 包在 ```json 围栏里 | 自动剥离 |
+| 前后带解说文字 | 扫描配平括号提取 |
+| 直接输出数组而非 `{"cards":[]}` | 识别三种数组形态 |
+| 用 `content` / `category` / `name` 代替 `body` / `type` / `title` | 字段别名映射 |
+| `subject` 与 `predicate` 合成一个 `slot` 字段 | 拆回两个字段 |
+| type 写成中文「偏好」 | 归一到 `preference` |
+| tags 写成逗号分隔字符串 | 拆成数组 |
+| 某块无内容 | 写 `{"cards": []}` 即可，是合法结果 |
+
+只有**缺必填字段**才会被过滤，且会明确报出原因。
+schema 警告（如正文超长）不丢弃，而是记录下来交给人判断。
+
+纯元信息分块（只有文件头、无实质内容）会被标记为可跳过，agent 直接写空结果即可，不浪费一次往返。
+
+### 与直连模式的关系
+
+两种模式**下游完全一致**：导入的卡片走的是同一套 `dedupe → 冲突检测 → 审查 → 导出`，
+代码路径一字不差，所以产出可以直接对比。
+
+抽取规范也共用一套 —— `INSTRUCTIONS.md` 由直连模式的 `SYSTEM_PROMPT` 生成，不会各自漂移。
+
+---
 
 ---
 
@@ -255,19 +371,22 @@ npm test            # 全部 242 项测试
 
 ```
 memory-forge/
+├── bin/
+│   └── forge.js           CLI（agent 驱动的主路径）
 ├── electron/
-│   ├── main.js              主进程：窗口、IPC、buildChunks、抽取任务调度
-│   └── preload.js           安全桥：白名单 API + webUtils 拖拽
+│   ├── main.js            主进程：窗口、IPC、buildChunks、任务调度
+│   └── preload.js         安全桥：白名单 API + webUtils 拖拽
 ├── src/
-│   ├── engine/              纯 Node 引擎，无 Electron 依赖，可独立测试
-│   │   ├── parser.js        格式识别、切分、分块
-│   │   ├── schema.js        卡片 schema、归一化、校验、渲染
-│   │   ├── llm.js           多后端客户端、重试、JSON 容错
-│   │   ├── extract.js       提示词与抽取管线
-│   │   ├── merge.js         去重、冲突检测、基线对比、裁决
-│   │   ├── sampler.js       浅尝模式：路径校验、抽样、卡片还原、报告
-│   │   └── palace.js        读取已有记忆库
-│   └── renderer/            界面（原生 JS，无框架）
+│   ├── engine/            纯 Node 引擎，无 Electron 依赖，可独立测试
+│   │   ├── parser.js      格式识别、切分、分块
+│   │   ├── schema.js      卡片 schema、归一化、校验、渲染
+│   │   ├── llm.js         多后端客户端、重试、JSON 容错
+│   │   ├── extract.js     提示词与抽取管线（直连模式）
+│   │   ├── agentmode.js   agent 模式：任务包生成、结果导入、指令生成
+│   │   ├── merge.js       去重、冲突检测、基线对比、裁决
+│   │   ├── sampler.js     浅尝模式：路径校验、抽样、卡片还原、报告
+│   │   └── palace.js      读取已有记忆库
+│   └── renderer/          界面（原生 JS，无框架）
 │       ├── index.html
 │       ├── styles.css
 │       └── renderer.js
@@ -275,12 +394,18 @@ memory-forge/
     ├── run-tests.js         111 项引擎测试
     ├── e2e-real-files.js    20 项真实文件端到端
     ├── trial-mode.js        74 项浅尝模式单元测试
-    └── trial-integration.js 37 项浅尝模式集成测试
+    ├── trial-integration.js 37 项浅尝模式集成测试
+    └── agent-mode.js        60 项 agent 模式测试
 ```
 
 **引擎与界面完全解耦**：`src/engine/` 不依赖 Electron，可在纯 Node 下测试与复用。
 
-**浅尝模式的位置**：`sampler.js` 只负责「取样与还原」，产出与 `parseContent` 同构的 Record[]，之后的分块、抽取、去重、冲突检测、报告全部是既有代码。这保证了试运行与全量运行的口径一致。
+**agent 模式的位置**：`agentmode.js` 只负责「生成任务包 + 导入结果」，
+中间的理解工作由 agent 完成。产出的卡片走的是与直连模式**完全相同**的下游管线
+（`dedupe → 冲突检测 → 审查 → 导出`），保证两种模式的输出口径一致。
+
+**浅尝模式的位置**：`sampler.js` 只负责「取样与还原」，产出与 `parseContent` 同构的
+Record[]，之后的分块、抽取、去重、冲突检测、报告全部是既有代码。
 
 ---
 
@@ -298,10 +423,11 @@ memory-forge/
 ## 测试
 
 ```bash
-npm test              # 全部 242 项
+npm test              # 全部 302 项
 npm run test:engine   # 111 项引擎测试
 npm run test:e2e      # 20 项真实文件端到端
 npm run test:trial    # 111 项浅尝模式（74 单元 + 37 集成）
+npm run test:agent    # 60 项 agent 驱动模式
 ```
 
 引擎测试覆盖：格式识别（5 种）、解析切分、JSON 容错解析、schema 归一化与校验、渲染往返一致性、去重、冲突检测、基线对比、裁决应用、ID 分配、palace 读取、相似度算法，以及用 mock LLM 跑的完整管线。
@@ -309,6 +435,8 @@ npm run test:trial    # 111 项浅尝模式（74 单元 + 37 集成）
 端到端测试用真实的 md/log/json/jsonl/txt 五种文件，跑通「解析 → 抽取 → 去重 → 冲突检出 → 裁决 → 分配 ID → 写盘 → 回读验证」，并确认回读后的 slot 口径与 `palace doctor` 一致。
 
 浅尝模式测试覆盖抽样三种策略、可复现性、全部边界错误码、只读保证（目录快照逐文件比对）、写入守卫，以及「试运行与完整模式分块结构同构」——这是管线复用的直接证据。
+
+agent 模式测试覆盖任务包结构、指令内容质量（正例反例/别名/中文触发词要求）、八类输出容错、进度追踪、部分提交、以及「agent 产出走同一套下游管线且不改动记忆库」。
 
 ---
 

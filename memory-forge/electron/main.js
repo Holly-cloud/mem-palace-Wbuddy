@@ -23,6 +23,7 @@ const { LLMClient } = require('../src/engine/llm');
 const { extractAll } = require('../src/engine/extract');
 const merge = require('../src/engine/merge');
 const sampler = require('../src/engine/sampler');
+const agentmode = require('../src/engine/agentmode');
 const { loadPalace, slotList } = require('../src/engine/palace');
 const { renderCard, cardFileName, validateCard, TYPES, TYPE_ORDER } = require('../src/engine/schema');
 
@@ -442,6 +443,128 @@ ipcMain.handle('export:write', async (_e, { cards, targetDir, startSeq, mode }) 
 function forceAllowed(rejected) {
   return rejected.every((r) => r.problems.every((p) => p.includes('超过') || p.includes('上限')));
 }
+
+// --- IPC：Agent 驱动模式 --------------------------------------------------
+
+/**
+ * 生成 agent 抽取任务包。
+ *
+ * 这是「不配置模型」的关键：GUI 负责解析切分，agent 负责理解。
+ */
+ipcMain.handle('agent:makeTask', async (_e, { files, palaceRoot, chunkBudget, style }) => {
+  const chunks = [];
+  for (const f of files || []) {
+    if (f.error || !f.records) continue;
+    parser.chunkRecords(f.records, { budget: chunkBudget || 6000 }).forEach((c) => {
+      c._sourceFile = f.name;
+      c._sourcePath = f.path;
+      chunks.push(c);
+    });
+  }
+  if (!chunks.length) {
+    return { ok: false, error: '没有可处理的文件' };
+  }
+
+  const out = path.join(app.getPath('temp'), `forge-task-${Date.now()}`);
+  const meta = {
+    sourceDesc: `${(files || []).filter((f) => !f.error).length} 个文件`,
+    style: style || 'auto',
+    existingSlots: palaceRoot ? slotList(loadPalace(palaceRoot).cards, 60) : [],
+  };
+  const pkg = agentmode.writeTaskPackage(out, { chunks, meta });
+
+  // 任务包放在临时目录，GUI 不主动写用户的磁盘位置；由 agent 决定后续
+  return {
+    ok: true,
+    root: pkg.root,
+    chunkCount: pkg.manifest.chunkCount,
+    instructionsPath: pkg.instructionsPath,
+    instructions: fs.readFileSync(pkg.instructionsPath, 'utf8'),
+    manifest: pkg.manifest,
+  };
+});
+
+/** 只读查看任务进度 */
+ipcMain.handle('agent:status', async (_e, { taskDir }) => {
+  try {
+    return agentmode.taskStatus(taskDir);
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+/**
+ * 导入 agent 产出的结果，跑与直连模式完全相同的下游管线。
+ */
+ipcMain.handle('agent:import', async (_e, { taskDir, palaceRoot }) => {
+  let res;
+  try {
+    res = agentmode.importResults(taskDir);
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+  if (!res.ok) return res;
+
+  const cards = res.cards.map((c, i) => ({ ...c, _localId: c._localId || `A${i + 1}` }));
+
+  const dd = merge.dedupe(cards);
+  const internalConflicts = merge.findInternalConflicts(dd.kept);
+
+  let baselineCards = [];
+  let baselineInfo = null;
+  if (palaceRoot) {
+    const base = loadPalace(palaceRoot);
+    baselineCards = base.cards;
+    baselineInfo = { cardCount: base.cards.length, maxSeq: base.maxSeq, found: base.found };
+  }
+  const baselineCmp = merge.compareWithBaseline(dd.kept, baselineCards);
+
+  return {
+    ok: true,
+    mode: 'agent',
+    cards: dd.kept,
+    deduped: dd.dropped,
+    internalConflicts,
+    baselineConflicts: baselineCmp.conflicts,
+    newSlots: baselineCmp.newSlots,
+    errors: [],
+    rejected: res.rejected,
+    progress: res.progress,
+    perChunk: res.perChunk,
+    baselineInfo,
+  };
+});
+
+/** 任务包目录 → 写入记忆库（与 export:write 同一套 ID 分配与渲染逻辑） */
+ipcMain.handle('agent:write', async (_e, { cards, targetDir, startSeq }) => {
+  if (!targetDir) return { ok: false, error: '未指定目标目录' };
+  const withIds = merge.assignIds(cards, startSeq || 1);
+  const check = merge.finalCheck(withIds.map((x) => ({ ...x.card, id: x.id })));
+  if (check.rejected.length) {
+    return { ok: false, error: '存在不合规卡片', rejected: check.rejected };
+  }
+  const written = [];
+  const failed = [];
+  for (const card of check.ok) {
+    const dir = path.join(targetDir, 'cards', card.type);
+    const file = path.join(dir, cardFileName(card.id, card.title));
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(file, renderCard(card, card.id), 'utf8');
+      written.push({ id: card.id, rel: path.join('cards', card.type, cardFileName(card.id, card.title)) });
+    } catch (err) {
+      failed.push({ id: card.id, error: err.message });
+    }
+  }
+  try {
+    const seqPath = path.join(targetDir, '.palace', 'seq.txt');
+    fs.mkdirSync(path.dirname(seqPath), { recursive: true });
+    const cur = parseInt(fs.readFileSync(seqPath, 'utf8').trim() || '0', 10) || 0;
+    const next = withIds.length ? parseInt(withIds[withIds.length - 1].id.replace('mem_', ''), 10) : cur;
+    if (next > cur) fs.writeFileSync(seqPath, `${next}\n`, 'utf8');
+  } catch (_) { /* seq 同步失败不阻断 */ }
+  return { ok: true, written, failed };
+});
 
 // --- IPC：浅尝模式 -------------------------------------------------------
 

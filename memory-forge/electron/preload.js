@@ -51,6 +51,12 @@ contextBridge.exposeInMainWorld('forge', {
   trialInspect: (payload) => ipcRenderer.invoke('trial:inspect', payload),
   commitTrialParams: (payload) => ipcRenderer.invoke('trial:commitParams', payload),
 
+  // Agent 驱动模式（无需配置模型）
+  agentMakeTask: (payload) => ipcRenderer.invoke('agent:makeTask', payload),
+  agentStatus: (taskDir) => ipcRenderer.invoke('agent:status', { taskDir }),
+  agentImport: (payload) => ipcRenderer.invoke('agent:import', payload),
+  agentWrite: (payload) => ipcRenderer.invoke('agent:write', payload),
+
   // palace
   loadPalace: (root) => ipcRenderer.invoke('palace:load', { root }),
 

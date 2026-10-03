@@ -474,6 +474,75 @@ body {
 
 .empty-inline { font-size: 12px; color: var(--text-3); padding: 6px 0; }
 
+/* ── 抽取执行方式切换 ─────────────────── */
+.exec-switch { display: flex; gap: 10px; margin-bottom: 16px; }
+.exec-btn {
+  flex: 1; padding: 11px 15px; text-align: left; cursor: pointer;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); font-family: inherit; transition: all .12s;
+}
+.exec-btn:hover { border-color: var(--border-strong); background: var(--surface-2); }
+.exec-btn.active { border-color: var(--teal); background: var(--teal-soft); }
+.exec-name { display: block; font-size: 13px; font-weight: 500; color: var(--text); }
+.exec-desc { display: block; font-size: 11px; color: var(--text-3); margin-top: 2px; }
+.exec-btn.active .exec-name { color: var(--teal); }
+
+/* ── Agent 任务流 ─────────────────────── */
+.steps-list { list-style: none; counter-reset: s; }
+.steps-list > li {
+  counter-increment: s;
+  position: relative; padding: 10px 0 10px 30px;
+  border-bottom: 1px solid var(--surface-2);
+}
+.steps-list > li:last-child { border-bottom: none; }
+.steps-list > li::before {
+  content: counter(s); position: absolute; left: 0; top: 10px;
+  width: 20px; height: 20px; border-radius: 50%;
+  display: grid; place-items: center;
+  font-size: 11px; font-weight: 600;
+  background: var(--teal-soft); color: var(--teal);
+}
+.steps-list strong { font-size: 13px; font-weight: 500; }
+.steps-list .hint { margin: 2px 0 8px; }
+
+.task-instruction { margin: 8px 0; }
+.ti-lead { font-size: 12px; color: var(--text-2); margin-bottom: 5px; }
+.ti-body {
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.65;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 11px 13px;
+  white-space: pre-wrap; word-break: break-word; color: var(--text-2);
+  max-height: 220px; overflow-y: auto;
+}
+.ti-body code, .hint code {
+  font-family: var(--mono); font-size: 11px;
+  background: var(--teal-soft); color: var(--teal);
+  padding: 1px 4px; border-radius: 3px;
+}
+
+#agentTaskCard .btn { margin-bottom: 4px; }
+#agentProgress { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--surface-2); }
+
+.chunk-list {
+  display: flex; flex-direction: column; gap: 2px;
+  max-height: 190px; overflow-y: auto; margin: 10px 0;
+}
+.chunk-row {
+  display: flex; align-items: center; gap: 9px;
+  font-size: 12px; padding: 4px 8px; border-radius: 4px;
+}
+.chunk-row:nth-child(odd) { background: var(--surface-2); }
+.chunk-mark {
+  width: 16px; height: 16px; border-radius: 50%;
+  display: grid; place-items: center; font-size: 10px; font-weight: 600; flex-shrink: 0;
+}
+.chunk-mark.ok { background: var(--green-soft); color: var(--green); }
+.chunk-mark.err { background: var(--red-soft); color: var(--red); }
+.chunk-mark.wait { background: var(--surface); color: var(--text-3); border: 1px solid var(--border); }
+.chunk-id { font-family: var(--mono); color: var(--text-3); flex-shrink: 0; }
+.chunk-src { flex: 1; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chunk-state { color: var(--text-3); font-size: 11px; flex-shrink: 0; }
+
 /* ── 底部导航 ───────────────────────────── */
 .navbar {
   display: flex; align-items: center; justify-content: space-between;

@@ -9,12 +9,15 @@
 const S = {
   step: 1,
   mode: 'full',         // 'full' | 'trial'
+  execMode: 'agent',    // 'agent' | 'llm' —— 抽取执行方式
   files: [],            // 已解析文件（含 records 摘要）
   palaceRoot: null,
   palaceInfo: null,
   trialLibrary: null,   // 试运行目标库概况
   trialPlan: null,      // 抽样计划
   trialReport: null,    // 试运行报告
+  agentTask: null,      // agent 任务包信息
+  agentStatus: null,    // 任务进度
   jobId: null,
   extracting: false,
   // 抽取结果
@@ -97,7 +100,13 @@ function stepComplete(n) {
   if (n === 2) {
     return S.mode === 'trial' ? !!(S.trialLibrary && S.trialPlan) : S.files.some((f) => !f.error);
   }
-  if (n === 3) return S.cards.length > 0;
+  if (n === 3) {
+    if (S.mode === 'trial' && S.execMode === 'agent') {
+      return !!(S.agentTask && S.agentStatus && S.agentStatus.done > 0);
+    }
+    if (S.execMode === 'agent') return !!S.agentTask;
+    return S.cards.length > 0;
+  }
   if (n === 4) return S.mode === 'trial' ? !!S.trialReport : S.cards.some((c) => !c._dropped);
   return true;
 }
@@ -447,6 +456,186 @@ async function copyReport() {
     log('试运行摘要已复制到剪贴板', 'ok');
   } catch (err) {
     log(`复制失败：${err.message}`, 'warn');
+  }
+}
+
+// ── Agent 驱动模式 ────────────────────────────────────────────
+
+/** 切换抽取执行方式 */
+function setExecMode(mode) {
+  S.execMode = mode;
+  $$('.exec-btn').forEach((b) => b.classList.toggle('active', b.dataset.exec === mode));
+  $('#execAgent').hidden = mode !== 'agent';
+  $('#execLlm').hidden = mode !== 'llm';
+  refreshNav();
+}
+
+/** 生成任务包 */
+async function makeTask() {
+  const valid = S.mode === 'trial' ? null : S.files.filter((f) => !f.error);
+  if (S.mode !== 'trial' && !valid) return log('没有可处理的文件', 'err');
+
+  const btn = $('#btnMakeTask');
+  btn.disabled = true;
+  btn.textContent = '生成中…';
+
+  const res = await window.forge.agentMakeTask({
+    files: valid || [],
+    palaceRoot: S.palaceRoot,
+    chunkBudget: Number($('#cfgBudget').value) || 6000,
+    style: $('#cfgStyle').value,
+  });
+
+  btn.disabled = false;
+  btn.textContent = '重新生成任务包';
+
+  if (!res.ok) {
+    $('#agentProgress').innerHTML = '';
+    $('#agentProgress').appendChild(errBox(`${res.error}`));
+    return;
+  }
+
+  S.agentTask = res;
+  log(`任务包已生成：${res.chunkCount} 块`, 'ok');
+
+  // 显示给 agent 的指令，带上可直接复制的命令
+  const cmd = `forge task ${res.chunkCount} 块 → 处理 → forge import`;
+  $('#taskInstruction').innerHTML = `
+    <p class="ti-lead">把下面这段发给你的 agent：</p>
+    <pre class="ti-body">请用记忆铸造厂（memory-forge）的 CLI 处理记忆抽取：
+
+1. 读指令文件：<code>${escapeHtml(res.instructionsPath)}</code>
+2. 按其中的规范，逐块处理 <code>${escapeHtml(res.root + '/chunks')}</code> 下的每个 .md，
+   把结果 JSON 写到对应的 <code>results/</code> 目录
+3. 处理完回复「已完成 N/M 块」
+
+也可以直接用命令行：
+  cd ${escapeHtml(res.root)}
+  # 逐块读取 chunks/*.md，结果写入 results/*.result.json
+  forge import ${escapeHtml(res.root)}</pre>
+    <p class="hint">任务目录：<code>${escapeHtml(res.root)}</code>　分块数：${res.chunkCount}</p>
+  `;
+
+  $('#agentStep2').hidden = false;
+  $('#agentStep3').hidden = false;
+  await refreshAgentStatus();
+}
+
+/** 刷新任务进度 */
+async function refreshAgentStatus() {
+  if (!S.agentTask) return;
+  const box = $('#agentProgress');
+  const st = await window.forge.agentStatus(S.agentTask.root);
+  if (!st.ok) {
+    box.innerHTML = '';
+    box.appendChild(errBox(st.error));
+    return;
+  }
+  S.agentStatus = st;
+  box.innerHTML = '';
+
+  const head = el('div', 'stats-row');
+  const cells = [
+    ['已完成', `${st.done}/${st.total}`, st.done === st.total ? 'good' : 'warn'],
+    ['进度', `${st.percent}%`, st.done === st.total ? 'good' : ''],
+    ['任务 ID', st.taskId.slice(0, 12), ''],
+  ];
+  cells.forEach(([k, v, tone]) => {
+    const s = el('div', 'stat' + (tone ? ' ' + tone : ''));
+    s.appendChild(el('div', 'stat-v', String(v)));
+    s.appendChild(el('div', 'stat-k', k));
+    head.appendChild(s);
+  });
+  box.appendChild(head);
+
+  // 分块明细
+  const list = el('div', 'chunk-list');
+  st.chunks.forEach((c) => {
+    const row = el('div', 'chunk-row');
+    const mark = c.state === 'ok' ? 'ok' : c.state === 'error' ? 'err' : 'wait';
+    row.appendChild(el('span', `chunk-mark ${mark}`, c.state === 'ok' ? '✓' : c.state === 'error' ? '!' : '○'));
+    row.appendChild(el('span', 'chunk-id', c.id));
+    row.appendChild(el('span', 'chunk-src', c.sourceFile || '未知'));
+    row.appendChild(el('span', 'chunk-state',
+      c.state === 'ok' ? `${c.cardCount} 张卡片` : c.state === 'error' ? '解析失败' : '未提交'));
+    list.appendChild(row);
+  });
+  box.appendChild(list);
+
+  if (st.done < st.total) {
+    box.appendChild(el('div', 'warn-box',
+      `还有 ${st.total - st.done} 块未提交结果。agent 可以分批处理，随时回来点「刷新进度」。`));
+  }
+}
+
+/** 导入 agent 产出的结果 */
+async function importAgentResult() {
+  if (!S.agentTask) return log('请先生成任务包', 'err');
+
+  const btn = $('#btnAgentImport');
+  btn.disabled = true;
+  btn.textContent = '导入中…';
+
+  const res = await window.forge.agentImport({
+    taskDir: S.agentTask.root,
+    palaceRoot: S.palaceRoot,
+  });
+
+  btn.disabled = false;
+  btn.textContent = '导入结果';
+
+  if (!res.ok) {
+    $('#agentProgress').innerHTML = '';
+    $('#agentProgress').appendChild(errBox(res.error || '导入失败'));
+    return;
+  }
+
+  // 走与直连模式完全相同的下游流程
+  S.cards = res.cards.map((c, i) => ({
+    ...c, _localId: c._localId || `A${i + 1}`, _dropped: false, _edited: false,
+    status: c.status || 'active',
+  }));
+  S.deduped = res.deduped || [];
+  S.internalConflicts = res.internalConflicts || [];
+  S.baselineConflicts = res.baselineConflicts || [];
+  S.newSlots = res.newSlots || [];
+  S.errors = [];
+  S.rejected = res.rejected || [];
+  S.decisions.clear();
+
+  log(`导入完成：${S.cards.length} 张卡片（agent 处理 ${res.progress.done}/${res.progress.total} 块）`, 'ok');
+  if (S.internalConflicts.length) log(`检出 ${S.internalConflicts.length} 个内部冲突 slot`, 'warn');
+  if (S.rejected.length) log(`${S.rejected.length} 张卡片被过滤`, 'warn');
+
+  applyDecisions();
+  renderReview();
+  goStep(4);
+}
+
+function errBox(msg) {
+  const e = el('div', 'err-box');
+  e.appendChild(el('div', 'err-title', msg));
+  return e;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+async function copyInstruction() {
+  if (!S.agentTask) return;
+  const text = `请用记忆铸造厂（memory-forge）的 CLI 处理记忆抽取：
+
+1. 读指令文件：${S.agentTask.instructionsPath}
+2. 按其中的规范，逐块处理 ${S.agentTask.root}/chunks 下的每个 .md，
+   把结果 JSON 写到对应的 results/ 目录
+3. 处理完回复「已完成 N/${S.agentTask.chunkCount} 块」`;
+  try {
+    await navigator.clipboard.writeText(text);
+    log('指令已复制，可直接粘贴给 agent', 'ok');
+  } catch (err) {
+    log(`复制失败：${err.message}，请手动选中下方文本`, 'warn');
   }
 }
 
@@ -1202,6 +1391,17 @@ function bind() {
     b.onclick = () => setMode(b.dataset.mode);
   });
 
+  // 抽取执行方式切换
+  $$('.exec-btn').forEach((b) => {
+    b.onclick = () => setExecMode(b.dataset.exec);
+  });
+
+  // Agent 模式
+  $('#btnMakeTask').onclick = makeTask;
+  $('#btnAgentStatus').onclick = refreshAgentStatus;
+  $('#btnAgentImport').onclick = importAgentResult;
+  $('#btnCopyInstruction').onclick = copyInstruction;
+
   // 步骤 1 — 完整模式
   $('#btnPickFiles').onclick = pickFiles;
   $('#btnPickPalace').onclick = pickPalace;
@@ -1310,6 +1510,7 @@ function updateAmountLabel() {
 (async function init() {
   bind();
   setMode('full');
+  setExecMode('agent');   // 默认交给 agent，零配置
   goStep(1);
 
   try {

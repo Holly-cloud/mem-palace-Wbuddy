@@ -146,8 +146,8 @@
     <!-- ── 步骤 3：抽取 ───────────────────────────────── -->
     <section class="panel" data-panel="3">
       <div class="panel-head">
-        <h2>配置模型并抽取</h2>
-        <p>优先使用本地模型（无需密钥，数据不出本机）。</p>
+        <h2>抽取记忆</h2>
+        <p>默认交给当前 agent 处理，无需配置任何模型。</p>
       </div>
 
       <div class="readonly-banner slim" id="trialRunBanner" hidden>
@@ -155,6 +155,47 @@
         <div><strong>浅尝模式</strong> — 本次使用抽样样本运行，不会写入任何文件</div>
       </div>
 
+      <!-- 抽取执行方式 -->
+      <div class="exec-switch" id="execSwitch">
+        <button class="exec-btn active" data-exec="agent">
+          <span class="exec-name">交给 Agent 处理</span>
+          <span class="exec-desc">推荐。无需配置模型，agent 用自己的模型完成抽取</span>
+        </button>
+        <button class="exec-btn" data-exec="llm">
+          <span class="exec-name">直连模型 API</span>
+          <span class="exec-desc">高级。自行配置 Ollama / OpenAI 兼容端点 / Claude</span>
+        </button>
+      </div>
+
+      <!-- Agent 模式 -->
+      <div id="execAgent">
+        <div class="card" id="agentTaskCard">
+          <h3>抽取任务</h3>
+          <ol class="steps-list">
+            <li>
+              <strong>生成任务包</strong>
+              <p class="hint">把待分析文本切成标准分块，附带抽取规范</p>
+              <button class="btn" id="btnMakeTask">生成任务包</button>
+            </li>
+            <li id="agentStep2" hidden>
+              <strong>交给 Agent</strong>
+              <p class="hint">把这段指令连同任务包路径发给你的 agent（CLI 粘贴最可靠）</p>
+              <div class="task-instruction" id="taskInstruction"></div>
+              <button class="btn btn-sm" id="btnCopyInstruction">复制指令</button>
+            </li>
+            <li id="agentStep3" hidden>
+              <strong>导入结果</strong>
+              <p class="hint">agent 会把卡片写到任务的 <code>results/</code> 目录，然后回到这里导入</p>
+              <button class="btn" id="btnAgentStatus">刷新进度</button>
+              <button class="btn btn-primary" id="btnAgentImport">导入结果</button>
+            </li>
+          </ol>
+          <div id="agentProgress"></div>
+        </div>
+      </div>
+
+      <!-- 直连模型模式 -->
+      <div id="execLlm" hidden>
       <div class="grid2">
         <div class="card">
           <h3>模型后端</h3>
@@ -162,7 +203,7 @@
           <div class="field">
             <label>Provider</label>
             <select id="cfgProvider">
-              <option value="ollama">Ollama（本地，推荐）</option>
+              <option value="ollama">Ollama（本地）</option>
               <option value="openai">OpenAI 兼容端点</option>
               <option value="anthropic">Anthropic Claude</option>
             </select>
@@ -192,25 +233,25 @@
           <div class="field">
             <label>每块字符预算</label>
             <input id="cfgBudget" type="number" value="6000" min="500" step="500" />
-            <p class="field-hint">控制单次请求的输入规模。小文件可调小以获得更细的切分。</p>
+            <p class="field-hint">控制单次处理的规模。Agent 模式下建议 6000–12000。</p>
           </div>
           <div class="field">
             <label>抽取侧重</label>
             <select id="cfgStyle">
-              <option value="auto">自动（由模型判断）</option>
+              <option value="auto">自动（由 agent 判断）</option>
               <option value="preference">优先偏好与身份</option>
               <option value="technical">优先环境与技术栈</option>
               <option value="lesson">优先经验与决策</option>
             </select>
           </div>
           <div class="field">
-            <label>并发数</label>
+            <label>并发数（仅直连模式）</label>
             <input id="cfgConcurrency" type="number" value="2" min="1" max="8" />
-            <p class="field-hint">本地推理建议 1–2，云端可提高。</p>
+            <p class="field-hint">本地推理建议 1–2。Agent 模式无需此项。</p>
           </div>
           <label class="check">
             <input type="checkbox" id="cfgUseExisting" checked />
-            <span>提示模型已有记忆的 slot（减少重复抽取）</span>
+            <span>提示已有记忆的 slot（减少重复抽取）</span>
           </label>
         </div>
       </div>
@@ -218,6 +259,7 @@
       <div class="extract-actions">
         <button class="btn btn-primary" id="btnExtract">开始抽取</button>
         <button class="btn" id="btnCancel" hidden>取消</button>
+      </div>
       </div>
 
       <div class="progress-wrap" id="progressWrap" hidden>
