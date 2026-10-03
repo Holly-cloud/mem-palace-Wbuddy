@@ -437,6 +437,10 @@ function buildChunksFromRecipes(fileEntries, loadResult, { budget = 6000 } = {})
     const res = splitByRecipe(entry.path, entry.recipe);
     const fileChunks = parser.chunkRecords(res.records, { budget });
     fileChunks.forEach((c) => {
+      // ★ 必须重编全局索引：chunkRecords 对每个文件独立调用，
+      // 产生的 index 都从 0 开始。若不重编，两个文件的 chunk 0 会撞车 ——
+      // agent 写 index=0 的结果会覆盖掉另一个文件的 chunk 0，数据静默丢失。
+      c.index = chunks.length;
       c._sourceFile = entry.name;
       c._sourcePath = entry.path;
       c._strategy = entry.recipe.strategy;
@@ -479,6 +483,7 @@ function buildFallbackChunks(fileEntries, budget) {
       const parsed = parser.parseContent(entry.path, text);
       const cs = parser.chunkRecords(parsed.records, { budget });
       cs.forEach((c) => {
+        c.index = chunks.length;   // 全局重编，理由同上
         c._sourceFile = entry.name;
         c._sourcePath = entry.path;
         c._strategy = `fallback:${parsed.format}`;

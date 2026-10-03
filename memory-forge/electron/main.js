@@ -58,7 +58,8 @@ function createWindow() {
 
   mainWindow.loadFile(path.join(__dirname, '..', 'src', 'renderer', 'index.html'));
 
-  // 外链一律用系统浏览器打开，不在应用内导航
+  // 设置页独立窗口：它是「工具能否运转」的前置条件 ——
+  // 没接上 Agent 时工具没有推理能力，所以值得一个独立窗口反复查看。
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: 'deny' };
@@ -443,6 +444,127 @@ ipcMain.handle('export:write', async (_e, { cards, targetDir, startSeq, mode }) 
 function forceAllowed(rejected) {
   return rejected.every((r) => r.problems.every((p) => p.includes('超过') || p.includes('上限')));
 }
+
+// --- IPC：窗口 -----------------------------------------------------------
+
+ipcMain.handle('window:openSettings', async () => {
+  const win = new BrowserWindow({
+    width: 900,
+    height: 860,
+    minWidth: 720,
+    minHeight: 640,
+    backgroundColor: '#faf9f7',
+    title: '连接设置 · 记忆铸造厂',
+    parent: mainWindow,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  win.loadFile(path.join(__dirname, '..', 'src', 'renderer', 'settings.html'));
+  return { ok: true };
+});
+
+ipcMain.handle('window:openAbout', async () => {
+  await shell.openExternal('https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp');
+  return { ok: true };
+});
+
+// --- IPC：配置与 Agent 适配 ----------------------------------------------
+
+/**
+ * 检测宿主 Agent 状态。
+ * 工具本身不独立运行 —— 它没有内置模型，需要 Agent 驱动，
+ * 所以「Agent 是否就绪」是工具可用性的前提，必须显式呈现。
+ */
+ipcMain.handle('config:detectAgent', async (_e, { agent }) => {
+  const adapter = require('../src/engine/agentAdapter');
+  try {
+    return adapter.detectAgent(agent || 'hermes');
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('config:listAgents', async () => {
+  const adapter = require('../src/engine/agentAdapter');
+  return {
+    agents: Object.values(adapter.ADAPTERS).map((a) => ({
+      key: a.key,
+      label: a.label,
+      status: a.status,
+      mcpSupport: a.mcpSupport,
+      notes: a.notes,
+      docsUrl: a.docsUrl,
+    })),
+  };
+});
+
+ipcMain.handle('config:previewSnippet', async (_e, { agent, toolFilter }) => {
+  const adapter = require('../src/engine/agentAdapter');
+  const serverPath = path.join(__dirname, '..', 'bin', 'forge-mcp.js');
+  const built = adapter.buildConfigSnippet(agent || 'hermes', {
+    serverPath, toolFilter: toolFilter || null,
+  });
+  return {
+    ok: true,
+    snippet: built.snippet,
+    full: built.full,
+    serverPath,
+    serverExists: fs.existsSync(built.serverPath),
+  };
+});
+
+ipcMain.handle('config:install', async (_e, { agent, toolFilter }) => {
+  const adapter = require('../src/engine/agentAdapter');
+  try {
+    const res = adapter.installConfig(agent || 'hermes', {
+      serverPath: path.join(__dirname, '..', 'bin', 'forge-mcp.js'),
+      toolFilter: toolFilter || null,
+    });
+    // 安装后立刻自检，让用户立刻知道能不能跑通
+    if (res.ok) {
+      const test = await adapter.selfTest(res.serverPath);
+      res.selfTest = test;
+    }
+    return res;
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('config:uninstall', async (_e, { agent }) => {
+  const adapter = require('../src/engine/agentAdapter');
+  try {
+    return adapter.uninstallConfig(agent || 'hermes');
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('config:selfTest', async (_e, { serverPath }) => {
+  const adapter = require('../src/engine/agentAdapter');
+  const p = serverPath || path.join(__dirname, '..', 'bin', 'forge-mcp.js');
+  try {
+    return await adapter.selfTest(p);
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+/** 列出 MCP 工具清单，供界面展示 */
+ipcMain.handle('config:listTools', async () => {
+  const { TOOL_DEFS } = require('../bin/forge-mcp.js');
+  return {
+    tools: TOOL_DEFS.map((t) => ({
+      name: t.name,
+      description: t.description.split('\n')[0].slice(0, 100),
+      required: (t.inputSchema && t.inputSchema.required) || [],
+    })),
+  };
+});
 
 // --- IPC：格式探查 -------------------------------------------------------
 

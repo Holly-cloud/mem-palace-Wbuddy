@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self';" />
+<title>连接设置 · 记忆铸造厂</title>
+<link rel="stylesheet" href="settings.css" />
+</head>
+<body>
+<div class="page">
+
+  <header class="head">
+    <div class="head-left">
+      <h1>连接设置</h1>
+      <p class="sub">记忆铸造厂本身不运行推理，需要由 Agent 驱动。这里配置与 Agent 的连接。</p>
+    </div>
+    <div class="head-right">
+      <span class="status-pill" id="statusPill"><span class="dot"></span><span id="statusText">检查中…</span></span>
+    </div>
+  </header>
+
+  <!-- 步骤 1：选择 Agent -->
+  <section class="block">
+    <div class="block-head">
+      <span class="step-num">1</span>
+      <div>
+        <h2>选择 Agent</h2>
+        <p>工具通过 MCP 被 Agent 调用。当前阶段仅针对 hermes agent 研发适配。</p>
+      </div>
+    </div>
+    <div id="agentList" class="agent-list"></div>
+  </section>
+
+  <!-- 步骤 2：检测状态 -->
+  <section class="block" id="statusBlock" hidden>
+    <div class="block-head">
+      <span class="step-num">2</span>
+      <div>
+        <h2>检测 Agent 状态</h2>
+        <p>确认 Agent 已安装、MCP 配置文件位置正确。</p>
+      </div>
+    </div>
+    <div id="detectPanel" class="detect"></div>
+  </section>
+
+  <!-- 步骤 3：配置 MCP -->
+  <section class="block" id="configBlock" hidden>
+    <div class="block-head">
+      <span class="step-num">3</span>
+      <div>
+        <h2>注册 MCP 服务器</h2>
+        <p>把下面的配置写入 Agent 的配置文件，或手动复制到对应位置。</p>
+      </div>
+    </div>
+
+    <div class="row gap">
+      <button class="btn btn-primary" id="btnInstall">自动写入配置</button>
+      <button class="btn" id="btnCopy">复制配置片段</button>
+      <button class="btn" id="btnSelfTest">连接自检</button>
+      <button class="btn btn-danger" id="btnUninstall">移除配置</button>
+    </div>
+
+    <div class="snippet-box">
+      <div class="snippet-head">
+        <span id="snippetPath">~/.hermes/config.yaml</span>
+        <span class="hint" id="snippetHint">写入前会自动备份为 .forge-backup</span>
+      </div>
+      <pre id="snippet" class="snippet"></pre>
+    </div>
+
+    <div id="installResult"></div>
+  </section>
+
+  <!-- 步骤 4：工具清单 -->
+  <section class="block" id="toolsBlock" hidden>
+    <div class="block-head">
+      <span class="step-num">4</span>
+      <div>
+        <h2>Agent 可用的工具</h2>
+        <p>注册后这些工具会出现在 Agent 的工具列表里，Agent 用它们驱动整个转换流程。</p>
+      </div>
+    </div>
+    <div class="tool-filter">
+      <label class="check">
+        <input type="checkbox" id="filterEnabled" />
+        <span>只暴露常用工具（推荐）</span>
+      </label>
+      <p class="field-hint">全量 12 个工具会占用 Agent 的上下文。只选 6 个常用工具可省下约一半。</p>
+    </div>
+    <div id="toolList" class="tool-list"></div>
+  </section>
+
+  <!-- 步骤 5：开始使用 -->
+  <section class="block" id="nextBlock" hidden>
+    <div class="block-head">
+      <span class="step-num done">✓</span>
+      <div>
+        <h2>连接完成</h2>
+        <p>按下面步骤让 Agent 加载 MCP 工具。</p>
+      </div>
+    </div>
+    <ol id="nextSteps" class="next-steps"></ol>
+    <div class="hint-box" id="usageHint"></div>
+  </section>
+
+</div>
+<script src="settings.js"></script>
+</body>
+</html>

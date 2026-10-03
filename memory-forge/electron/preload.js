@@ -57,6 +57,19 @@ contextBridge.exposeInMainWorld('forge', {
   agentImport: (payload) => ipcRenderer.invoke('agent:import', payload),
   agentWrite: (payload) => ipcRenderer.invoke('agent:write', payload),
 
+  // 窗口
+  openSettings: () => ipcRenderer.invoke('window:openSettings'),
+  openMcpDocs: () => ipcRenderer.invoke('window:openAbout'),
+
+  // 配置与 Agent 适配
+  detectAgent: (agent) => ipcRenderer.invoke('config:detectAgent', { agent }),
+  listAgents: () => ipcRenderer.invoke('config:listAgents'),
+  previewSnippet: (payload) => ipcRenderer.invoke('config:previewSnippet', payload),
+  installAgentConfig: (payload) => ipcRenderer.invoke('config:install', payload),
+  uninstallAgentConfig: (agent) => ipcRenderer.invoke('config:uninstall', { agent }),
+  selfTestMcp: (serverPath) => ipcRenderer.invoke('config:selfTest', { serverPath }),
+  listMcpTools: () => ipcRenderer.invoke('config:listTools'),
+
   // 格式探查（格式不统一时先让 agent 勘察）
   probeMakeTask: (filePaths) => ipcRenderer.invoke('probe:makeTask', { filePaths }),
   probeStatus: (probeDir) => ipcRenderer.invoke('probe:status', { probeDir }),

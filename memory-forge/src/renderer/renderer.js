@@ -19,6 +19,7 @@ const S = {
   agentTask: null,      // agent 抽取任务包信息
   agentStatus: null,    // 抽取进度
   probeTask: null,      // 探查任务包信息
+  agentDetect: null,    // Agent 连接检测结果
   jobId: null,
   extracting: false,
   // 抽取结果
@@ -629,6 +630,45 @@ forge split ${r.root} --out ./task1`;
   } catch (err) {
     log(`复制失败：${err.message}，请手动选中下方文本`, 'warn');
   }
+}
+
+// --- Agent 连接状态 -------------------------------------------------------
+
+/**
+ * 顶栏显示 Agent 连接状态。
+ * 这个工具没有内置模型 —— 没接上 Agent 就无法抽取，所以状态必须显眼。
+ */
+async function refreshAgentStatus() {
+  const dot = $('#agentDot');
+  const label = $('#agentLabel');
+  try {
+    const res = await window.forge.detectAgent('hermes');
+    if (!res.ok) {
+      dot.className = 'al-dot err';
+      label.textContent = '检测失败';
+      return;
+    }
+    S.agentDetect = res;
+    if (!res.installed) {
+      dot.className = 'al-dot err';
+      label.textContent = '未检测到 hermes';
+    } else if (!res.registered) {
+      dot.className = 'al-dot warn';
+      label.textContent = '待配置 MCP';
+    } else {
+      dot.className = 'al-dot ok';
+      label.textContent = 'hermes 已连接';
+    }
+  } catch (err) {
+    dot.className = 'al-dot err';
+    label.textContent = '检测失败';
+  }
+}
+
+async function openSettings() {
+  await window.forge.openSettings();
+  // 关闭窗口后回来刷新一次状态，用户可能刚配好
+  setTimeout(refreshAgentStatus, 800);
 }
 
 // ── Agent 驱动模式 ────────────────────────────────────────────
@@ -1553,6 +1593,9 @@ async function doExport() {
 // --- 事件绑定 -----------------------------------------------------------
 
 function bind() {
+  // Agent 连接
+  $('#btnAgentLink').onclick = openSettings;
+
   // 步骤
   $('#btnNext').onclick = () => {
     const next = S.mode === 'trial' ? (S.step === 1 ? 3 : S.step + 1) : S.step + 1;
@@ -1699,6 +1742,7 @@ function updateAmountLabel() {
   setMode('full');
   setExecMode('agent');   // 默认交给 agent，零配置
   goStep(1);
+  refreshAgentStatus();
 
   try {
     const t = await window.forge.getTypes();

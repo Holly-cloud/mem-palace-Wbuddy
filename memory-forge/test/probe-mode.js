@@ -307,6 +307,17 @@ ok('分块带来源文件', built.chunks.every((c) => !!c._sourceFile));
 ok('perFile 字段完整',
   built.perFile.every((f) => f.name && f.strategy && typeof f.recordCount === 'number'));
 
+// 回归：多文件时 chunkRecords 对每个文件独立调用，index 都从 0 开始。
+// 若不重编，两个文件的 chunk 0 会撞车 —— agent 写 index=0 覆盖掉
+// 另一个文件的 chunk 0，数据静默丢失。
+ok('★ 多文件分块索引全局唯一', (() => {
+  const idx = built.chunks.map((c) => c.index);
+  return new Set(idx).size === idx.length;
+})(), `索引为 ${built.chunks.map((c) => c.index).join(',')}`);
+ok('★ 分块索引连续递增',
+  built.chunks.every((c, i) => c.index === i),
+  built.chunks.map((c) => c.index).join(','));
+
 // 部分提交 → 兜底
 const partialDir = path.join(tmp, 'probe-partial');
 const pPkg = probe.writeProbeTask(partialDir, { files: entries, meta: {} });

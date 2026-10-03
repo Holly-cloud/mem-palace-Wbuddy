@@ -344,6 +344,23 @@ body {
 .rb-title { font-weight: 500; margin-bottom: 4px; }
 .rb-detail { font-size: 12px; color: var(--text-2); }
 
+/* ── Agent 连接入口 ───────────────────── */
+.agent-link {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 5px 12px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface-2);
+  font-size: 12px; color: var(--text-2); font-family: inherit;
+  transition: all .12s;
+}
+.agent-link:hover { border-color: var(--border-strong); background: var(--surface); }
+.al-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--text-3); flex-shrink: 0;
+}
+.al-dot.ok { background: var(--green); }
+.al-dot.warn { background: #ba7517; }
+.al-dot.err { background: var(--red); }
+
 /* ── 模式切换 ───────────────────────────── */
 .mode-switch { display: flex; gap: 10px; margin-bottom: 18px; }
 .mode-btn {

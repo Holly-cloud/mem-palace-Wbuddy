@@ -4,7 +4,8 @@
 
 面向的场景：你手里有一堆杂乱的 Agent 记忆（Markdown 笔记、对话导出、JSON 配置、日志、纯文本片段），想迁入 [memory-palace](../memory-palace) 那套结构化体系，但又不想手工整理。
 
-**内置大语言模型能力** —— 默认交给当前 agent 执行，**无需配置任何模型或 API Key**。
+**内置大语言模型能力** —— 抽取由 Agent 执行，工具本身不含模型。
+通过 MCP 与 Agent 连接，无需配置任何 API Key。
 
 **三种运行模式**：
 - **完整模式** — 处理你选定的文件，全量输出并可导出
@@ -17,14 +18,106 @@
 
 | | |
 |---|---|
-| **零配置** | 不需要装模型、不需要 API Key。抽取交给当前 agent 用它自己的模型完成 |
+| **Agent 驱动** | 工具不含模型，抽取由 Agent 完成。通过 MCP 连接，无需 API Key |
 | **格式探查** | Agent 记忆格式千差万别，让 agent 先勘察结构、产出切分配方，避免规则解析丢内容 |
-| **两种执行方式** | 默认 agent 驱动；也可直连 Ollama / OpenAI 兼容端点 / Claude |
+| **两种执行方式** | Agent 驱动（默认）；也可直连 Ollama / OpenAI 兼容端点 / Claude |
 | **格式不限** | Markdown / 纯文本 / JSON / JSONL / 日志 / YAML / CSV / 对话导出 / Codex 会话 |
 | **浅尝模式** | 从真实记忆库抽样试运行，全程只读，确认后再转全量 |
 | **冲突可见** | 与已有记忆库对比，同一 slot 的矛盾会被检出并要求你裁决，不自动决定 |
 | **格式可靠** | 输出与 memory-palace 的 schema 严格对齐，导出的文件可被 CLI 直接读取 |
 | **可追溯** | 每张卡片记录来自哪个文件、哪个片段 |
+
+---
+
+## 快速开始
+
+```bash
+npm install
+./start.sh          # 启动 GUI
+```
+
+首次使用**先配置 Agent 连接**：点右上角「未检测到 hermes」那个入口 →
+「自动写入配置」→ 在 hermes 会话里 `/reload-mcp`。
+
+```bash
+npm test            # 全部 522 项测试
+```
+
+---
+
+## 与 Agent 的连接（MCP）
+
+**这个工具本身不运行推理。** 它没有内置模型 —— 抽取靠 Agent，工具只负责解析、切分、校验、去重、冲突检测这些确定性工作。
+
+所以「工具 ↔ Agent 的连接」是使用前提，而不是可选项。配置在独立的「连接设置」窗口（主界面右上角入口）。
+
+### 为什么用 MCP 而不是让 Agent 走 CLI
+
+走 CLI 的话，Agent 需要知道工具装在哪、命令怎么拼、中间产物落在哪。这些都是实现细节，每轮都得重新推断，猜错就整条流程断掉。
+
+走 MCP，Agent 只需理解一件事：**有哪些工具、各自做什么**。路径、参数、文件名规则全由 server 内部维护。
+
+工具名语义化到可以直接当自然语言用，比如 `forge_read_chunk`。
+
+### 接入 hermes（三步）
+
+GUI 里点「自动写入配置」即可，也可以手动把配置片段加到 `~/.hermes/config.yaml`：
+
+```yaml
+mcp_servers:
+  memory_forge:
+    command: "node"
+    args: ["/绝对路径/memory-forge/bin/forge-mcp.js"]
+    enabled: true
+    timeout: 300
+```
+
+然后在 hermes 会话里执行 `/reload-mcp`，用 `hermes mcp list` 确认连接。
+
+工具会以 `mcp__memory_forge__<name>` 的形式出现在 Agent 工具列表里。
+
+### 12 个工具
+
+| 分组 | 工具 | 用途 |
+|---|---|---|
+| 勘察 | `forge_probe_start` | 勘察文件格式，生成探查任务 |
+| | `forge_probe_read_sample` | 读结构采样（头尾片段 + 客观统计） |
+| | `forge_probe_write_recipe` | 写切分配方 |
+| | `forge_probe_status` | 查探查进度 |
+| 切分 | `forge_split_by_recipe` | 按配方切分，生成抽取任务 |
+| 抽取 | `forge_task_start` | 跳过探查直接生成任务 |
+| | `forge_task_read_chunk` | 读一个分块的内容 |
+| | `forge_task_write_result` | 提交某块的抽取结果 |
+| | `forge_import_results` | 导入结果、跑下游管线、可选写盘 |
+| 记忆库 | `forge_palace_doctor` | 体检记忆库 |
+| | `forge_palace_search` | 检索已生效的记忆 |
+| | `forge_list_types` | 列出类型与字段规则 |
+
+设置页可以只暴露常用工具 —— 全量 12 个会占用 Agent 上下文，筛到 7 个能省下一半。
+
+### Agent 的典型用法
+
+```
+你：用 memory forge 把这三个记忆文件整理成记忆卡片
+Agent：（自动调用 forge_probe_start 勘察格式）
+      （若格式复杂，调用 forge_probe_read_sample 后写配方）
+      （forge_split_by_recipe 切分）
+      （逐块 forge_task_read_chunk → 理解 → forge_task_write_result）
+      （forge_import_results 汇总，报告冲突）
+```
+
+工作流的全部知识固化在工具语义与返回值里（`nextSteps` 字段），Agent 不需要知道文件放在哪。
+
+### 配置写入是安全的
+
+写 `~/.hermes/config.yaml` 时用**文本级最小插入**，不做「解析 YAML → 修改 → 序列化」：
+
+- 不引入 yaml 依赖
+- 任何序列化差异都不会改写用户的其他配置
+- 逐行锚定条目边界，重复安装是更新而非追加
+- 自动备份为 `.forge-backup`
+
+测试覆盖了 6 种场景：新建、追加到已有段、重复安装、无 `mcp_servers` 段、备份、卸载——每种都验证了**原有配置未被破坏**。
 
 ---
 
@@ -511,33 +604,31 @@ schema 警告（如正文超长）不丢弃，而是记录下来交给人判断�
 ```
 memory-forge/
 ├── bin/
-│   └── forge.js           CLI（agent 驱动的主路径）
+│   ├── forge.js            CLI（agent 驱动的主路径）
+│   └── forge-mcp.js        MCP Server（stdio，hermes 通过它驱动工具）
 ├── electron/
-│   ├── main.js            主进程：窗口、IPC、buildChunks、任务调度
-│   └── preload.js         安全桥：白名单 API + webUtils 拖拽
+│   ├── main.js             主进程：窗口、IPC、buildChunks、任务调度
+│   └── preload.js          安全桥：白名单 API + webUtils 拖拽
 ├── src/
-│   ├── engine/            纯 Node 引擎，无 Electron 依赖，可独立测试
-│   │   ├── parser.js      格式识别、切分、分块（探查的兜底）
-│   │   ├── schema.js      卡片 schema、归一化、校验、渲染
-│   │   ├── llm.js         多后端客户端、重试、JSON 容错
-│   │   ├── extract.js     提示词与抽取管线（直连模式）
-│   │   ├── agentmode.js   agent 模式：任务包生成、结果导入、指令生成
-│   │   ├── probe.js       探查模式：结构探测、配方校验、配方加载
+│   ├── engine/             纯 Node 引擎，无 Electron 依赖，可独立测试
+│   │   ├── parser.js       格式识别、切分、分块（探查的兜底）
+│   │   ├── schema.js       卡片 schema、归一化、校验、渲染
+│   │   ├── llm.js          多后端客户端、重试、JSON 容错
+│   │   ├── extract.js      提示词与抽取管线（直连模式）
+│   │   ├── agentmode.js    agent 模式：任务包生成、结果导入、指令生成
+│   │   ├── probe.js        探查模式：结构探测、配方校验、配方加载
 │   │   ├── splitByRecipe.js 配方驱动的切分执行器（11 种策略）
-│   │   ├── merge.js       去重、冲突检测、基线对比、裁决
-│   │   ├── sampler.js     浅尝模式：路径校验、抽样、卡片还原、报告
-│   │   └── palace.js      读取已有记忆库
-│   └── renderer/          界面（原生 JS，无框架）
-│       ├── index.html
+│   │   ├── merge.js        去重、冲突检测、基线对比、裁决
+│   │   ├── sampler.js      浅尝模式：路径校验、抽样、卡片还原、报告
+│   │   ├── palace.js       读取已有记忆库
+│   │   └── agentAdapter.js Agent 适配：检测、配置生成、连接自检
+│   └── renderer/           界面（原生 JS，无框架）
+│       ├── index.html      主界面（五步向导）
+│       ├── settings.html   连接设置（独立窗口）
 │       ├── styles.css
-│       └── renderer.js
-└── test/
-    ├── run-tests.js         111 项引擎测试
-    ├── e2e-real-files.js    20 项真实文件端到端
-    ├── trial-mode.js        74 项浅尝模式单元测试
-    ├── trial-integration.js 37 项浅尝模式集成测试
-    ├── agent-mode.js        60 项 agent 模式测试
-    └── probe-mode.js        88 项探查模式测试
+│       ├── settings.css
+│       └── renderer.js / settings.js
+└── test/                   522 项测试
 ```
 
 **引擎与界面完全解耦**：`src/engine/` 不依赖 Electron，可在纯 Node 下测试与复用。
@@ -569,12 +660,13 @@ Record[]，之后的分块、抽取、去重、冲突检测、报告全部是既
 ## 测试
 
 ```bash
-npm test              # 全部 390 项
+npm test              # 全部 522 项
 npm run test:engine   # 111 项引擎测试
 npm run test:e2e      # 20 项真实文件端到端
 npm run test:trial    # 111 项浅尝模式（74 单元 + 37 集成）
 npm run test:agent    # 60 项 agent 驱动模式
-npm run test:probe    # 88 项格式探查模式
+npm run test:probe    # 90 项格式探查模式
+npm run test:mcp      # 130 项 MCP 集成（真实 JSON-RPC over stdio）
 ```
 
 引擎测试覆盖：格式识别、解析切分、JSON 容错解析、schema 归一化与校验、渲染往返一致性、去重、冲突检测、基线对比、裁决应用、ID 分配、palace 读取、相似度算法，以及用 mock LLM 跑的完整管线。
@@ -587,6 +679,8 @@ agent 模式测试覆盖任务包结构、指令内容质量、八类输出容�
 
 探查模式测试覆盖结构探测（JSONL/对话/CSV/YAML/日志/Markdown 六类特征）、JSON 路径取值（8 种形态含 `a[].text`）、配方切分（11 种策略含 CSV 引号与 TSV）、配方校验、探查任务包、配方→分块→抽取任务包链路、兜底行为，以及全流程只读保证。
 
+MCP 集成测试走**真实 JSON-RPC over stdio**（不用内部调用绕过协议层），覆盖握手、12 个工具的注册与描述、探查→切分→抽取→导入的完整工作流、错误处理、以及配置写入的 6 种场景。
+
 ---
 
 ## 开发中修掉的真实缺陷
@@ -595,6 +689,9 @@ agent 模式测试覆盖任务包结构、指令内容质量、八类输出容�
 
 | 缺陷 | 症状 | 根因 |
 |---|---|---|
+| **多文件分块索引撞车** | 第二个文件的 chunk 0 结果被覆盖，数据静默丢失 | `chunkRecords` 对每个文件独立调用，index 都从 0 开始 |
+| **MCP 工具全部调不到** | `tools/list` 列出了工具但调用报「未知工具」 | 实现用短名 `probe_start`，声明用 `forge_probe_start`，前缀不匹配 |
+| **配置更新吃掉其他条目** | 再次安装 memory_forge 时把 filesystem 条目删了 | 替换正则 `(?:[ \t]+.*\n)*` 贪婪匹配跨越了兄弟条目 |
 | **嵌套内容静默丢失** | Codex 会话的真实内容整个消失 | 规则解析只取顶层字符串字段，`content[].text` 被丢弃 |
 | **抽取内容被截断** | 完整模式只处理每段前 240 字 | `fs:readFiles` 只返回 `preview` |
 | 日志被误判为 JSON | `[2026-01-01 ...]` 行首方括号触发 JSON 检测 | JSON 嗅探排在了日志嗅探之前 |
