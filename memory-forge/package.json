@@ -8,13 +8,15 @@
     "start:gpu": "electron . --disable-gpu --no-sandbox --in-process-gpu",
     "dev": "electron . --dev",
     "forge": "node bin/forge.js",
-    "test": "node test/run-tests.js && node test/e2e-real-files.js && node test/trial-mode.js && node test/trial-integration.js && node test/agent-mode.js && node test/probe-mode.js && node test/mcp-integration.js",
+    "test": "node test/run-tests.js && node test/e2e-real-files.js && node test/trial-mode.js && node test/trial-integration.js && node test/agent-mode.js && node test/probe-mode.js && node test/mcp-integration.js && node test/trial-mcp.js",
     "test:engine": "node test/run-tests.js",
     "test:e2e": "node test/e2e-real-files.js",
     "test:trial": "node test/trial-mode.js && node test/trial-integration.js",
     "test:agent": "node test/agent-mode.js",
     "test:probe": "node test/probe-mode.js",
-    "test:mcp": "node test/mcp-integration.js"
+    "test:mcp": "node test/mcp-integration.js",
+    "test:trial:mcp": "node test/trial-mcp.js",
+    "verify:hermes": "node scripts/verify-with-hermes.js"
   },
   "bin": {
     "forge": "bin/forge.js"

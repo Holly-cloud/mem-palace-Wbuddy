@@ -99,7 +99,7 @@ class McpClient {
   ok('声明 tools 能力', init.capabilities && !!init.capabilities.tools);
 
   const list = await c.request('tools/list', {});
-  ok('tools/list 返回工具', list.tools.length === 12, `got ${list.tools.length}`);
+  ok('tools/list 返回工具', list.tools.length === 13, `got ${list.tools.length}`);
 
   const toolNames = list.tools.map((t) => t.name);
   const expectedTools = [
@@ -502,7 +502,7 @@ class McpClient {
   const st = await adapter.selfTest(SERVER);
   ok('自检通过', st.ok === true);
   ok('返回协议版本', st.protocolVersion === '2024-11-05');
-  ok('返回工具数量', st.toolCount === 12);
+  ok('返回工具数量', st.toolCount === 13);
   ok('列出工具名', st.tools.includes('forge_probe_start'));
 
   const stBad = await adapter.selfTest(path.join(WORKSPACE, '不存在.js'));

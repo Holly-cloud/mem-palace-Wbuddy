@@ -737,7 +737,7 @@ ipcMain.handle('agent:status', async (_e, { taskDir }) => {
 /**
  * 导入 agent 产出的结果，跑与直连模式完全相同的下游管线。
  */
-ipcMain.handle('agent:import', async (_e, { taskDir, palaceRoot }) => {
+ipcMain.handle('agent:import', async (_e, { taskDir, palaceRoot, samplePlan, sampleStats }) => {
   let res;
   try {
     res = agentmode.importResults(taskDir);
@@ -760,9 +760,19 @@ ipcMain.handle('agent:import', async (_e, { taskDir, palaceRoot }) => {
   }
   const baselineCmp = merge.compareWithBaseline(dd.kept, baselineCards);
 
+  // 浅尝模式：前端带上抽样计划与样本构成，这里产出预览报告
+  let trialReport = null;
+  if (samplePlan) {
+    trialReport = sampler.buildReport(
+      { ...samplePlan, sampled: sampleStats || [] },
+      { cards: dd.kept, deduped: dd.dropped, internalConflicts, errors: [] },
+    );
+    trialReport.summary = sampler.summarize(trialReport);
+  }
+
   return {
     ok: true,
-    mode: 'agent',
+    mode: samplePlan ? 'trial' : 'agent',
     cards: dd.kept,
     deduped: dd.dropped,
     internalConflicts,
@@ -773,6 +783,7 @@ ipcMain.handle('agent:import', async (_e, { taskDir, palaceRoot }) => {
     progress: res.progress,
     perChunk: res.perChunk,
     baselineInfo,
+    trialReport,
   };
 });
 

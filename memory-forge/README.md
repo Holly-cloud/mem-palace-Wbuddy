@@ -40,7 +40,7 @@ npm install
 「自动写入配置」→ 在 hermes 会话里 `/reload-mcp`。
 
 ```bash
-npm test            # 全部 522 项测试
+npm test            # 全部 573 项测试
 ```
 
 ---
@@ -91,6 +91,7 @@ Windows 上 `AppData/Roaming/hermes` 是 Electron 运行时数据（Cache/Prefer
 
 | 分组 | 工具 | 用途 |
 |---|---|---|
+| 浅尝 | `forge_trial_start` | 从已有记忆库抽样试运行，**只读** |
 | 勘察 | `forge_probe_start` | 勘察文件格式，生成探查任务 |
 | | `forge_probe_read_sample` | 读结构采样（头尾片段 + 客观统计） |
 | | `forge_probe_write_recipe` | 写切分配方 |
@@ -104,7 +105,7 @@ Windows 上 `AppData/Roaming/hermes` 是 Electron 运行时数据（Cache/Prefer
 | | `forge_palace_search` | 检索已生效的记忆 |
 | | `forge_list_types` | 列出类型与字段规则 |
 
-设置页可以只暴露常用工具 —— 全量 12 个会占用 Agent 上下文，筛到 7 个能省下一半。
+设置页可以只暴露常用工具 —— 全量会占用 Agent 上下文，筛到 7 个能省一半。
 
 ### Agent 的典型用法
 
@@ -420,7 +421,84 @@ schema 警告（如正文超长）不丢弃，而是记录下来交给人判断�
 
 从已有记忆库抽样一小批，跑一遍完整流程看效果。**全程只读，绝不写入目标记忆库。**
 
-进入第 1 步后切换到「浅尝模式」，选择目标记忆库目录即可。
+### 三条路径怎么选
+
+| 路径 | 适合 | 入口 |
+|---|---|---|
+| **MCP（推荐）** | 已接 Agent，想先看效果 | 对 Agent 说「用 forge_trial_start 浅尝一下」 |
+| GUI | 想直观看到预览面板 | 步骤 1 切到「浅尝模式」 |
+| CLI | 脚本化、批处理 | `forge task --trial --palace ...` |
+
+三条路径的下游管线完全一致，产出可直接对比。
+
+### 通过 Agent（hermes）浅尝
+
+```
+你：用 memory forge 浅尝一下我的记忆库，抽 20 条看看效果
+
+Agent：（调用 forge_trial_start）
+      palaceRoot=C:\Users\Holly\...\memory-palace
+      count=20  strategy=slot  seed=42
+
+      → 返回：抽了多少、覆盖多少、seed、样本预览
+      （逐块 forge_task_read_chunk → forge_task_write_result）
+      （调用 forge_import_results，不传 write）
+
+      → 返回预览报告 + 冲突清单，全程未写入任何文件
+```
+
+参数建议：
+
+| 参数 | 值 | 说明 |
+|---|---|---|
+| `strategy` | `slot` | **最推荐**。每个 slot 至多取 1 条，最容易暴露同 slot 矛盾 |
+| | `stratified` | 按类型分层，保证每种类型都有代表 |
+| | `random` | 等概率，适合验证流程能否跑通 |
+| `count` | 20 | 小库（< 100 张）抽 20 条已足够看出问题 |
+| `ratio` | 0.1 | 大库用比例更省 |
+| `seed` | 固定值 | 同 seed 可复现同一批样本，便于对比不同模型效果 |
+
+### 只读保证
+
+浅尝任务即使在 `forge_import_results` 里传 `write=true` 也**不会写入**：
+
+```json
+{
+  "ok": true,
+  "mode": "trial",
+  "readonly": true,
+  "written": false,
+  "notice": "浅尝模式不会写入文件。确认结果满意后，请用 forge_task_start 处理完整内容。",
+  "trialReport": { "summary": "从 12 张记忆中抽样 4 张（slot 扩散…）…" }
+}
+```
+
+三重保障：任务被标记为 `kind=trial` → `import_results` 强制只读 → 测试逐文件比对确认零改动。
+
+### 确认满意后转全量
+
+```
+你：效果不错，全量跑一遍
+Agent：（调用 forge_task_start，把全部文件或整个记忆库传进去）
+      （import_results 时传 write=true 与 palaceRoot）
+```
+
+### 通过 GUI 浅尝
+
+1. 步骤 1 顶部切到「浅尝模式」
+2. 点「生成探查任务包」旁边的**「选择目标记忆库」**，选你的 memory-palace 目录
+3. 面板里选策略与数量，右侧实时显示抽样计划与样本预览
+4. 点「刷新进度」看 agent 处理到哪了
+5. 完成后第 4 步显示预览面板：抽样参数 / 组织结构 / 抽取结果 / 归类分布
+6. 满意后点「按此参数运行全量」
+
+### 通过 CLI 浅尝
+
+```bash
+forge task --trial --palace ../memory-palace --count 20 --strategy slot --out ./trial1
+# agent 处理 trial1 后：
+forge import ./trial1          # 不传 --write 只看统计
+```
 
 ### 抽样怎么接进现有流程
 
@@ -685,13 +763,14 @@ Record[]，之后的分块、抽取、去重、冲突检测、报告全部是既
 ## 测试
 
 ```bash
-npm test              # 全部 522 项
+npm test              # 全部 573 项
 npm run test:engine   # 111 项引擎测试
 npm run test:e2e      # 20 项真实文件端到端
 npm run test:trial    # 111 项浅尝模式（74 单元 + 37 集成）
 npm run test:agent    # 60 项 agent 驱动模式
 npm run test:probe    # 90 项格式探查模式
-npm run test:mcp      # 130 项 MCP 集成（真实 JSON-RPC over stdio）
+npm run test:mcp      # 140 项 MCP 集成（真实 JSON-RPC over stdio）
+npm run test:trial:mcp # 41 项浅尝模式经 MCP 的完整链路
 ```
 
 引擎测试覆盖：格式识别、解析切分、JSON 容错解析、schema 归一化与校验、渲染往返一致性、去重、冲突检测、基线对比、裁决应用、ID 分配、palace 读取、相似度算法，以及用 mock LLM 跑的完整管线。

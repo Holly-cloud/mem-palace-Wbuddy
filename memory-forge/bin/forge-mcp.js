@@ -39,6 +39,7 @@ const probe = require(path.join(ENGINE, 'probe'));
 const splitter = require(path.join(ENGINE, 'splitByRecipe'));
 const agentmode = require(path.join(ENGINE, 'agentmode'));
 const merge = require(path.join(ENGINE, 'merge'));
+const sampler = require(path.join(ENGINE, 'sampler'));
 const { loadPalace } = require(path.join(ENGINE, 'palace'));
 const { TYPES, TYPE_ORDER, LINK_RELATIONS } = require(path.join(ENGINE, 'schema'));
 
@@ -534,6 +535,12 @@ tools.import_results = ({ taskId, palaceRoot, write, dryRun }) => {
   const dir = resolveTaskDir(taskId);
   if (!dir) return { ok: false, error: `未找到任务 ${taskId}` };
 
+  const taskMeta = loadTaskIndex()[taskId] || {};
+
+  // 浅尝模式：即使传了 write 也不写 —— 试运行的目的是预览，不是落地。
+  const isTrialTask = taskMeta.kind === 'trial';
+  const allowWrite = write && !isTrialTask;
+
   const res = agentmode.importResults(dir);
   if (!res.ok) return res;
 
@@ -549,6 +556,8 @@ tools.import_results = ({ taskId, palaceRoot, write, dryRun }) => {
 
   const report = {
     ok: true,
+    mode: isTrialTask ? 'trial' : 'full',
+    readonly: isTrialTask,
     progress: res.progress,
     cardCount: dd.kept.length,
     deduped: dd.dropped.length,
@@ -563,7 +572,22 @@ tools.import_results = ({ taskId, palaceRoot, write, dryRun }) => {
     written: false,
   };
 
-  if (write && palaceRoot) {
+  // 试运行报告：抽样参数 + 组织结构 + 归类分布，供快速判断值不值
+  if (isTrialTask && taskMeta.plan) {
+    const sampled = sampleOfTask(taskMeta, dir);
+    const t = sampler.buildReport(
+      { ...taskMeta.plan, sampled },
+      { cards: dd.kept, deduped: dd.dropped, internalConflicts: conflicts, errors: [] },
+    );
+    t.summary = sampler.summarize(t);
+    report.trialReport = t;
+  }
+
+  if (isTrialTask) {
+    report.notice = write
+      ? '浅尝模式不会写入文件。确认结果满意后，请用 forge_task_start 处理完整内容。'
+      : '浅尝模式只预览，不写盘。';
+  } else if (allowWrite && palaceRoot) {
     const base = loadPalace(palaceRoot);
     const assigned = merge.assignIds(dd.kept, (base.maxSeq || 0) + 1, base.ids);
     let written = 0;
@@ -601,6 +625,115 @@ tools.import_results = ({ taskId, palaceRoot, write, dryRun }) => {
   }
 
   return report;
+};
+
+/**
+ * 从任务包还原抽样样本的元信息（类型/状态分布用）。
+ *
+ * 试运行报告要回答「这批样本长什么样」—— 类型分布、slot 覆盖、状态。
+ * 这些在生成任务包时写进了分块的 _sourceFile / _strategy，
+ * 但卡片本身要等 agent 抽取后才存在，所以这里从 manifest 重建。
+ */
+function sampleOfTask(taskMeta, dir) {
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
+    return (manifest.chunks || []).map((c) => ({
+      id: c.id,
+      type: 'unknown',
+      title: c.sourceFile || '',
+      status: 'active',
+      subject: '',
+      predicate: '',
+      value: '',
+    }));
+  } catch (_) {
+    return [];
+  }
+}
+
+/**
+ * 浅尝模式：从已有记忆库抽样一小批，走同样的抽取流程，全程只读。
+ *
+ * 与完整模式的差别只在「输入从哪来」：完整模式读文件，
+ * 浅尝模式从记忆库随机/分层/按 slot 抽 N 条。
+ * 下游管线（去重、冲突检测、对比）完全一致，所以两种模式的
+ * 结果口径可以直接对比。
+ */
+tools.trial_start = ({ palaceRoot, count, ratio, strategy, statusScope, seed, taskId, chunkBudget }) => {
+  if (!palaceRoot) {
+    return { ok: false, error: '浅尝模式需要 palaceRoot —— 指定要试运行的记忆库目录' };
+  }
+  const target = sampler.validateTarget(palaceRoot);
+  if (!target.ok) {
+    const e = sampler.toError(target);
+    return { ok: false, code: e.code, error: `${e.title}：${e.detail || palaceRoot}`, hint: e.hint };
+  }
+
+  const plan = sampler.planSample(target.cards, {
+    strategy: strategy || 'random',
+    count: count === undefined || count === null ? 20 : Number(count),
+    ratio: ratio === undefined || ratio === null ? null : Number(ratio),
+    statusScope: statusScope || 'active',
+    seed: seed === undefined || seed === null ? null : Number(seed),
+  });
+  if (!plan.ok) {
+    const e = sampler.toError(plan);
+    return { ok: false, code: e.code, error: `${e.title}：${e.detail || ''}`, hint: e.hint };
+  }
+
+  const records = sampler.sampleToRecords(plan.sampled);
+  const chunks = parser.chunkRecords(records, { budget: Number(chunkBudget) || 6000 });
+
+  const id = taskId || `trial-${Date.now()}`;
+  const out = path.join(taskDirOf(), id);
+  const pkg = agentmode.writeTaskPackage(out, {
+    chunks,
+    meta: {
+      sourceDesc: `记忆库样本（${plan.strategy} 抽取 ${plan.target} / ${plan.poolSize} 条）`,
+      style: 'auto',
+      // 浅尝的样本本身就来自这个库，不必再提示已有 slot
+      existingSlots: [],
+    },
+  });
+  // 记下抽样计划，import 时用它产出试运行报告
+  registerTask(id, 'trial', pkg.root, {
+    chunkCount: pkg.manifest.chunkCount,
+    plan: {
+      strategy: plan.strategy, statusScope: plan.statusScope, seed: plan.seed,
+      ratio: plan.ratio, target: plan.target, poolSize: plan.poolSize,
+      totalSize: plan.totalSize, warnings: plan.warnings,
+    },
+  });
+
+  return {
+    ok: true,
+    taskId: id,
+    taskDir: pkg.root,
+    chunkCount: pkg.manifest.chunkCount,
+    readonly: true,
+    sampling: {
+      strategy: plan.strategy,
+      strategyLabel: sampler.STRATEGIES[plan.strategy].label,
+      statusScope: plan.statusScope,
+      sampled: plan.target,
+      poolSize: plan.poolSize,
+      totalSize: plan.totalSize,
+      seed: plan.seed,
+      coverageRatio: Number((plan.target / plan.poolSize).toFixed(4)),
+      warnings: plan.warnings,
+    },
+    samplePreview: plan.sampled.slice(0, 10).map((c) => ({
+      id: c.id, type: c.type, title: c.title,
+      slot: `${c.subject}::${c.predicate}`, value: c.value, status: c.status,
+    })),
+    instructionsFile: pkg.instructionsPath,
+    nextSteps: [
+      `读取 ${pkg.instructionsPath} 了解抽取规范`,
+      '调用 forge_task_read_chunk 逐块处理，结果用 forge_task_write_result 写回',
+      '调用 forge_import_results（不要传 write）查看试运行报告 —— 它不会写入任何文件',
+    ],
+    note: '浅尝模式全程只读。确认结果满意后再用完整模式处理全部记忆。',
+  };
 };
 
 /** 体检记忆库 */
@@ -832,10 +965,43 @@ const TOOL_DEFS = [
     },
   },
   {
+    name: 'forge_trial_start',
+    description:
+      '浅尝模式：从已有记忆库抽样一小批（默认 20 条），跑与完整模式一致的抽取流程。' +
+      '用于在处理整个记忆库之前先验证效果 —— 抽样、切分、抽取、去重、冲突检测口径完全一致，' +
+      '只是输入量小。★ 全程只读：后续的 forge_import_results 不会写入任何文件。' +
+      'strategy 选 slot 时每个 slot 至多取 1 条，最容易暴露潜在的同 slot 矛盾。' +
+      'seed 填固定值可复现同一批样本，便于对比不同模型的效果。' +
+      '返回的 sampling 字段说明这次抽了多少、覆盖多少、seed 是多少。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        palaceRoot: { type: 'string', description: '要试运行的记忆库目录（memory-palace 根目录）' },
+        count: { type: 'number', description: '抽样条数，默认 20。与 ratio 二选一' },
+        ratio: { type: 'number', description: '抽样比例 0~1，与 count 二选一' },
+        strategy: {
+          type: 'string',
+          enum: ['random', 'stratified', 'slot'],
+          description: 'random 等概率；stratified 按类型分层；slot 每 slot 至多 1 条（易暴露冲突）',
+        },
+        statusScope: {
+          type: 'string',
+          enum: ['active', 'all'],
+          description: 'active 只抽当前生效的（默认）；all 含已过期/被取代的',
+        },
+        seed: { type: 'number', description: '随机种子，填固定值可复现同一批样本' },
+        taskId: { type: 'string' },
+        chunkBudget: { type: 'number' },
+      },
+      required: ['palaceRoot'],
+    },
+  },
+  {
     name: 'forge_import_results',
     description:
       '导入全部结果并跑下游管线（去重 → 冲突检测 → 与已有记忆对比）。' +
       '默认只统计不写盘；确认无误后传 write=true 与 palaceRoot 才会写入记忆库。' +
+      '浅尝任务（forge_trial_start 创建）即使传 write 也不会写 —— 工具会返回 notice 说明。' +
       '返回会列出所有冲突 slot —— 工具不会替你判断哪条为真，需要你或用户裁决。',
     inputSchema: {
       type: 'object',

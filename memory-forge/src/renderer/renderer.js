@@ -799,6 +799,18 @@ async function importAgentResult() {
   const res = await window.forge.agentImport({
     taskDir: S.agentTask.root,
     palaceRoot: S.palaceRoot,
+    // 浅尝模式：带上抽样计划以便产出预览报告
+    samplePlan: S.trialPlan ? {
+      strategy: S.trialPlan.strategy,
+      statusScope: S.trialPlan.statusScope,
+      seed: S.trialPlan.seed,
+      ratio: S.trialPlan.ratio,
+      target: S.trialPlan.requested,
+      poolSize: S.trialPlan.poolSize,
+      totalSize: S.trialPlan.totalSize,
+      warnings: S.trialPlan.warnings || [],
+    } : null,
+    sampleStats: S.trialPlan ? S.trialPlan.sample || [] : null,
   });
 
   btn.disabled = false;
@@ -1121,13 +1133,15 @@ function onExtractDone(d) {
   S.errors = [...S.errors, ...(d.errors || []).map((e) => ({ ...e, scope: 'extract' }))];
   S.rejected = d.rejected || [];
 
-  const isTrial = d.mode === 'trial';
+  const isTrial = d.mode === 'trial' || S.mode === 'trial';
   if (isTrial) {
-    S.trialReport = d.trialReport;
-    log(`浅尝完成：${S.cards.length} 张卡片（未写入任何文件）`, 'ok');
-    if (S.trialReport && S.trialReport.summary) log(S.trialReport.summary);
-    if (S.trialReport && S.trialReport.warnings && S.trialReport.warnings.length) {
-      S.trialReport.warnings.forEach((w) => log(w.message, 'warn'));
+    S.trialReport = d.trialReport || S.trialReport;
+    if (S.trialReport) {
+      log(`浅尝完成：${S.cards.length} 张卡片（未写入任何文件）`, 'ok');
+      if (S.trialReport.summary) log(S.trialReport.summary);
+      (S.trialReport.warnings || []).forEach((w) => log(w.message, 'warn'));
+    } else {
+      log(`浅尝完成：${S.cards.length} 张卡片（未写入任何文件）`, 'ok');
     }
   } else {
     log(`抽取完成：${S.cards.length} 张卡片，去重 ${S.deduped.length} 条`, 'ok');
