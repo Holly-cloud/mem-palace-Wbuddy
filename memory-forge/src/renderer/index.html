@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:;" />
+<title>记忆铸造厂 · Memory Forge</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div>
+        <h1>记忆铸造厂</h1>
+        <p class="brand-sub">把任意格式的 Agent 记忆文本转换为结构化记忆卡片</p>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <span class="badge" id="palaceBadge" hidden></span>
+    </div>
+  </header>
+
+  <nav class="steps" id="steps">
+    <button class="step active" data-step="1"><span class="step-num">1</span><span class="step-label">导入</span></button>
+    <button class="step" data-step="2"><span class="step-num">2</span><span class="step-label">解析</span></button>
+    <button class="step" data-step="3"><span class="step-num">3</span><span class="step-label">抽取</span></button>
+    <button class="step" data-step="4"><span class="step-num">4</span><span class="step-label">审查</span></button>
+    <button class="step" data-step="5"><span class="step-num">5</span><span class="step-label">导出</span></button>
+  </nav>
+
+  <main class="content">
+
+    <!-- ── 步骤 1：导入 ───────────────────────────────── -->
+    <section class="panel active" data-panel="1">
+      <div class="panel-head">
+        <h2>选择记忆来源</h2>
+        <p>完整模式处理你选定的文件；浅尝模式先从已有记忆库抽样试运行，确认效果后再全量。</p>
+      </div>
+
+      <div class="mode-switch" id="modeSwitch">
+        <button class="mode-btn active" data-mode="full">
+          <span class="mode-name">完整模式</span>
+          <span class="mode-desc">处理选定的文件，全量输出</span>
+        </button>
+        <button class="mode-btn" data-mode="trial">
+          <span class="mode-name">浅尝模式</span>
+          <span class="mode-desc">从已有记忆库抽样试运行，只读不写</span>
+        </button>
+      </div>
+
+      <div id="modeFull">
+        <div class="dropzone" id="dropzone">
+          <div class="dropzone-inner">
+            <div class="dz-icon"></div>
+            <p class="dz-title">拖拽文件到此处</p>
+            <p class="dz-sub">或点击选择</p>
+          </div>
+        </div>
+
+        <div class="row gap">
+          <button class="btn" id="btnPickFiles">选择文件</button>
+          <button class="btn" id="btnPickPalace">选择已有记忆库（可选）</button>
+          <span class="hint" id="palaceHint">选择后可在抽取时检出与现有记忆的冲突</span>
+        </div>
+
+        <div id="fileList" class="file-list"></div>
+      </div>
+
+      <div id="modeTrial" hidden>
+        <div class="readonly-banner">
+          <span class="rb-lock"></span>
+          <div>
+            <strong>只读模式</strong> — 浅尝运行全程不写入、不修改目标记忆库。
+            确认结果后可切换到完整模式再导出。
+          </div>
+        </div>
+
+        <div class="row gap">
+          <button class="btn" id="btnPickTrialPalace">选择目标记忆库</button>
+          <span class="hint" id="trialPalaceHint">尚未选择</span>
+        </div>
+
+        <div class="card" id="trialLibInfo" hidden></div>
+
+        <div class="card" id="trialParams" hidden>
+          <h3>抽样参数</h3>
+
+          <div class="field">
+            <label>抽样策略</label>
+            <select id="trialStrategy"></select>
+            <p class="field-hint" id="trialStrategyHint"></p>
+          </div>
+
+          <div class="sizing-row">
+            <div class="field">
+              <label>抽样方式</label>
+              <select id="trialSizing">
+                <option value="count">按数量</option>
+                <option value="ratio">按比例</option>
+              </select>
+            </div>
+            <div class="field">
+              <label id="trialAmountLabel">抽样数量</label>
+              <input id="trialAmount" type="number" value="20" min="1" step="1" />
+              <p class="field-hint" id="trialAmountHint"></p>
+            </div>
+          </div>
+
+          <div class="field">
+            <label>记忆状态范围</label>
+            <select id="trialScope"></select>
+            <p class="field-hint" id="trialScopeHint"></p>
+          </div>
+
+          <div class="field">
+            <label>随机种子（可选）</label>
+            <input id="trialSeed" type="text" placeholder="留空则随机；填写相同种子可复现同一批样本" />
+            <p class="field-hint">复现说明：同种子 + 同参数会抽到同一批记忆，便于对比不同模型或参数的效果。</p>
+          </div>
+
+          <div class="row gap">
+            <button class="btn" id="btnPreviewSample">预览样本</button>
+            <button class="btn btn-sm" id="btnShuffleSeed">换一批</button>
+          </div>
+          <div id="trialPreview"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── 步骤 2：解析 ───────────────────────────────── -->
+    <section class="panel" data-panel="2">
+      <div class="panel-head">
+        <h2>解析结果</h2>
+        <p>确认切分是否合理。每条记录都保留了来源位置，便于回溯。</p>
+      </div>
+
+      <div class="stats-row" id="parseStats"></div>
+
+      <div class="file-tabs" id="fileTabs"></div>
+      <div class="record-list" id="recordList"></div>
+    </section>
+
+    <!-- ── 步骤 3：抽取 ───────────────────────────────── -->
+    <section class="panel" data-panel="3">
+      <div class="panel-head">
+        <h2>配置模型并抽取</h2>
+        <p>优先使用本地模型（无需密钥，数据不出本机）。</p>
+      </div>
+
+      <div class="readonly-banner slim" id="trialRunBanner" hidden>
+        <span class="rb-lock"></span>
+        <div><strong>浅尝模式</strong> — 本次使用抽样样本运行，不会写入任何文件</div>
+      </div>
+
+      <div class="grid2">
+        <div class="card">
+          <h3>模型后端</h3>
+          <div class="model-detect" id="modelDetect"></div>
+          <div class="field">
+            <label>Provider</label>
+            <select id="cfgProvider">
+              <option value="ollama">Ollama（本地，推荐）</option>
+              <option value="openai">OpenAI 兼容端点</option>
+              <option value="anthropic">Anthropic Claude</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>服务地址</label>
+            <input id="cfgBaseUrl" type="text" placeholder="http://127.0.0.1:11434" />
+          </div>
+          <div class="field">
+            <label>API Key（本地模型留空）</label>
+            <input id="cfgApiKey" type="password" placeholder="sk-..." autocomplete="off" />
+          </div>
+          <div class="field">
+            <label>模型</label>
+            <input id="cfgModel" type="text" placeholder="qwen2.5:7b-instruct" list="modelList" />
+            <datalist id="modelList"></datalist>
+          </div>
+          <div class="row gap">
+            <button class="btn" id="btnDetect">探测可用模型</button>
+            <button class="btn" id="btnTestModel">测试连接</button>
+          </div>
+          <div class="hint" id="modelStatus"></div>
+        </div>
+
+        <div class="card">
+          <h3>抽取参数</h3>
+          <div class="field">
+            <label>每块字符预算</label>
+            <input id="cfgBudget" type="number" value="6000" min="500" step="500" />
+            <p class="field-hint">控制单次请求的输入规模。小文件可调小以获得更细的切分。</p>
+          </div>
+          <div class="field">
+            <label>抽取侧重</label>
+            <select id="cfgStyle">
+              <option value="auto">自动（由模型判断）</option>
+              <option value="preference">优先偏好与身份</option>
+              <option value="technical">优先环境与技术栈</option>
+              <option value="lesson">优先经验与决策</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>并发数</label>
+            <input id="cfgConcurrency" type="number" value="2" min="1" max="8" />
+            <p class="field-hint">本地推理建议 1–2，云端可提高。</p>
+          </div>
+          <label class="check">
+            <input type="checkbox" id="cfgUseExisting" checked />
+            <span>提示模型已有记忆的 slot（减少重复抽取）</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="extract-actions">
+        <button class="btn btn-primary" id="btnExtract">开始抽取</button>
+        <button class="btn" id="btnCancel" hidden>取消</button>
+      </div>
+
+      <div class="progress-wrap" id="progressWrap" hidden>
+        <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+        <div class="progress-text" id="progressText"></div>
+      </div>
+
+      <div id="extractLog" class="log"></div>
+    </section>
+
+    <!-- ── 步骤 4：审查 ───────────────────────────────── -->
+    <section class="panel" data-panel="4">
+      <div class="panel-head">
+        <h2>审查与裁决</h2>
+        <p>转换结果需要你确认。冲突不会自动裁决 —— 工具不替你判断哪条为真。</p>
+      </div>
+
+      <div class="stats-row" id="reviewStats"></div>
+
+      <!-- 浅尝模式结果预览 -->
+      <div class="trial-report" id="trialReport" hidden>
+        <div class="tr-head">
+          <span class="tr-badge">浅尝结果</span>
+          <span class="tr-summary" id="trSummary"></span>
+        </div>
+        <div class="tr-grid" id="trGrid"></div>
+        <div class="tr-warnings" id="trWarnings"></div>
+        <div class="tr-conflicts" id="trConflicts"></div>
+        <div class="tr-commit">
+          <div>
+            <strong>确认无误？</strong>
+            <p class="hint" id="trCommitHint">切换到完整模式后将处理全部记忆，抽样参数不再生效。</p>
+          </div>
+          <div class="row gap">
+            <button class="btn" id="btnCopyReport">复制摘要</button>
+            <button class="btn btn-primary" id="btnToFull">按此参数运行全量</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="tabs" id="reviewTabs">
+        <button class="tab active" data-tab="cards">记忆卡片 <span class="tab-count" id="cntCards">0</span></button>
+        <button class="tab" data-tab="conflicts">内部冲突 <span class="tab-count warn" id="cntConflicts">0</span></button>
+        <button class="tab" data-tab="baseline">与已有记忆 <span class="tab-count" id="cntBaseline">0</span></button>
+        <button class="tab" data-tab="errors">异常 <span class="tab-count danger" id="cntErrors">0</span></button>
+      </div>
+
+      <div class="tab-body" id="tabCards">
+        <div class="toolbar">
+          <input type="search" id="cardFilter" placeholder="按标题、slot、标签过滤…" />
+          <select id="cardTypeFilter"><option value="">全部类型</option></select>
+          <button class="btn btn-sm" id="btnDropAll">丢弃全部</button>
+        </div>
+        <div class="card-table-wrap">
+          <table class="card-table">
+            <thead>
+              <tr>
+                <th style="width:34px"><input type="checkbox" id="chkAll" /></th>
+                <th style="width:96px">类型</th>
+                <th>标题 / 主张</th>
+                <th style="width:210px">slot</th>
+                <th style="width:70px">置信</th>
+                <th style="width:70px">重要</th>
+                <th style="width:130px">操作</th>
+              </tr>
+            </thead>
+            <tbody id="cardRows"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="tab-body" id="tabConflicts" hidden></div>
+      <div class="tab-body" id="tabBaseline" hidden></div>
+      <div class="tab-body" id="tabErrors" hidden></div>
+    </section>
+
+    <!-- ── 步骤 5：导出 ───────────────────────────────── -->
+    <section class="panel" data-panel="5">
+      <div class="panel-head">
+        <h2 id="exportTitle">导出到记忆库</h2>
+        <p id="exportDesc">写入 Markdown 文件，可被 palace CLI 直接读取。</p>
+      </div>
+
+      <div class="readonly-banner" id="trialExportBanner" hidden>
+        <span class="rb-lock"></span>
+        <div>
+          <strong>浅尝模式不导出</strong> — 本次运行仅用于预览，不会写入任何文件。
+          如需落地结果，请回到第 4 步点「按此参数运行全量」。
+        </div>
+      </div>
+
+      <div id="exportFull">
+        <div class="row gap">
+          <button class="btn" id="btnPickTarget">选择目标记忆库目录</button>
+          <span class="hint" id="targetHint">未选择</span>
+        </div>
+
+        <div class="field">
+          <label>写入方式</label>
+          <select id="cfgMode">
+            <option value="merge">写入 cards/&lt;类型&gt;/（作为新记忆）</option>
+            <option value="archive">写入 archive/&lt;类型&gt;/（暂存待整理）</option>
+          </select>
+        </div>
+
+        <div id="exportPreview"></div>
+
+        <div class="export-actions">
+          <button class="btn btn-primary" id="btnExport" disabled>确认导出</button>
+          <span class="hint" id="exportStatus"></span>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="navbar">
+    <button class="btn" id="btnPrev" disabled>上一步</button>
+    <span class="step-ind" id="stepInd">步骤 1 / 5</span>
+    <button class="btn btn-primary" id="btnNext" disabled>下一步</button>
+  </footer>
+
+</div>
+
+<script src="renderer.js"></script>
+</body>
+</html>

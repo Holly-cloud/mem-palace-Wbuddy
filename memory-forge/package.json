@@ -1,0 +1,26 @@
+{
+  "name": "memory-forge",
+  "version": "1.0.0",
+  "description": "把任意格式的 Agent 记忆文本转换为结构化记忆卡片的桌面工具",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "start:gpu": "electron . --disable-gpu --no-sandbox --in-process-gpu",
+    "dev": "electron . --dev",
+    "test": "node test/run-tests.js && node test/e2e-real-files.js && node test/trial-mode.js && node test/trial-integration.js",
+    "test:engine": "node test/run-tests.js",
+    "test:e2e": "node test/e2e-real-files.js",
+    "test:trial": "node test/trial-mode.js && node test/trial-integration.js"
+  },
+  "keywords": [
+    "agent-memory",
+    "electron",
+    "llm",
+    "knowledge-base"
+  ],
+  "license": "MIT",
+  "private": true,
+  "devDependencies": {
+    "electron": "^32.3.3"
+  }
+}

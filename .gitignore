@@ -1,0 +1,48 @@
+# 依赖
+node_modules/
+package-lock.json
+npm-debug.log*
+yarn-error.log*
+
+# Electron 构建产物
+dist/
+out/
+build/
+release/
+*.exe
+*.dmg
+*.AppImage
+
+# 记忆宫殿运行状态（索引可重建，不入库）
+memory-palace/.palace/index.db
+memory-palace/.palace/index.db-journal
+memory-palace/.palace/index.db-wal
+memory-palace/.palace/index.db-shm
+memory-palace/.palace/seq.txt
+memory-palace/.palace/audit.log
+memory-palace/backups/
+
+# 导入备份（体积大且是一次性的）
+memory-palace/.palace/import-backups/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 编辑器与系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# 密钥与本地配置 —— 绝不入库
+.env
+.env.*
+*.key
+*.pem
+secrets.json
+config.local.json
