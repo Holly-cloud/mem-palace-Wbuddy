@@ -16,8 +16,9 @@ const S = {
   trialLibrary: null,   // 试运行目标库概况
   trialPlan: null,      // 抽样计划
   trialReport: null,    // 试运行报告
-  agentTask: null,      // agent 任务包信息
-  agentStatus: null,    // 任务进度
+  agentTask: null,      // agent 抽取任务包信息
+  agentStatus: null,    // 抽取进度
+  probeTask: null,      // 探查任务包信息
   jobId: null,
   extracting: false,
   // 抽取结果
@@ -459,6 +460,177 @@ async function copyReport() {
   }
 }
 
+// ── 格式探查 ────────────────────────────────────────────────
+
+/** 生成探查任务包 */
+async function makeProbeTask() {
+  const valid = S.mode === 'trial' ? [] : S.files.filter((f) => !f.error);
+  if (!valid.length) return log('请先在第 1 步选择文件', 'err');
+
+  const btn = $('#btnMakeProbe');
+  btn.disabled = true;
+  btn.textContent = '生成中…';
+
+  const res = await window.forge.probeMakeTask(valid.map((f) => f.path));
+
+  btn.disabled = false;
+  btn.textContent = '重新生成探查任务包';
+
+  if (!res.ok) {
+    const box = $('#probeResult');
+    box.innerHTML = '';
+    box.appendChild(errBox(res.error));
+    return;
+  }
+
+  S.probeTask = res;
+  renderProbeResult(res);
+
+  // 给出可直接复制的探查指令
+  const cmd = [
+    `forge probe ${res.fileCount} 个文件`,
+    `forge probe-status ${res.root}`,
+    `forge split ${res.root} --out ./task1`,
+  ].join('\n');
+  $('#probeInstruction').innerHTML = `
+    <p class="ti-lead">把下面这段发给你的 agent：</p>
+    <pre class="ti-body">请用记忆铸造厂（memory-forge）勘察这些记忆文件的结构：
+
+1. 读指令文件：<code>${escapeHtml(res.instructionsPath)}</code>
+2. 读 <code>${escapeHtml(res.root + '/samples')}</code> 下的每个 .json（里面是文件的头尾片段与结构统计），
+   判断每个文件该怎么切
+3. 为每个文件写一份切分配方到 <code>${escapeHtml(res.root + '/recipes')}</code> 目录，
+   文件名把扩展名换成 <code>.recipe.json</code>
+
+写完之后回复「已勘察 N/M 个文件」。
+
+命令行等价流程：
+${escapeHtml(cmd)}</pre>
+    <p class="hint">探查目录：<code>${escapeHtml(res.root)}</code>　文件数：${res.fileCount}</p>
+  `;
+  $('#probeTaskPanel').hidden = false;
+  $('#btnSplitByProbe').hidden = false;
+  $('#agentTaskTitle').textContent = '第 3 步 · 抽取任务';
+  log(`探查任务包已生成：${res.fileCount} 个文件`, 'ok');
+}
+
+/** 显示探查结果与结构速览 */
+function renderProbeResult(res) {
+  const box = $('#probeResult');
+  box.innerHTML = '';
+  if (!res.previews || !res.previews.length) return;
+
+  const table = el('div', 'probe-table');
+  res.previews.forEach((p) => {
+    const row = el('div', 'probe-row');
+    row.appendChild(el('span', 'probe-name', p.name));
+    if (p.error) {
+      row.appendChild(el('span', 'probe-err', p.error));
+    } else {
+      row.appendChild(el('span', 'probe-guess', `规则猜测 ${p.ruleGuess}`));
+      const marks = el('span', 'probe-marks');
+      (p.marks && p.marks.length ? p.marks : ['结构不明显']).forEach((m) => {
+        marks.appendChild(el('span', 'probe-mark', m));
+      });
+      row.appendChild(marks);
+      if (p.nestedContentLines > 0) {
+        row.appendChild(el('span', 'probe-warn',
+          `⚠ ${p.nestedContentLines} 行含嵌套内容，规则解析会丢失`));
+      }
+    }
+    table.appendChild(row);
+  });
+  box.appendChild(table);
+}
+
+/** 按配方切分 */
+async function splitByProbe() {
+  if (!S.probeTask) return;
+  const btn = $('#btnSplitByProbe');
+  btn.disabled = true;
+  btn.textContent = '切分中…';
+
+  const res = await window.forge.probeSplit({
+    probeDir: S.probeTask.root,
+    chunkBudget: Number($('#cfgBudget').value) || 6000,
+  });
+
+  btn.disabled = false;
+  btn.textContent = '按配方切分';
+
+  if (!res.ok) {
+    const box = $('#probeResult');
+    box.innerHTML = '';
+    box.appendChild(errBox(res.error));
+    return;
+  }
+
+  // 切分结果直接转成抽取任务包
+  S.agentTask = {
+    root: res.root,
+    chunkCount: res.chunkCount,
+    instructionsPath: res.instructionsPath,
+    manifest: res.manifest,
+    _fromRecipe: true,
+  };
+  S.agentStatus = null;
+
+  // 显示切分明细
+  const box = $('#probeResult');
+  box.innerHTML = '';
+  const title = el('div', 'hint', '切分结果：');
+  box.appendChild(title);
+  res.perFile.forEach((f) => {
+    const isFallback = String(f.strategy).startsWith('fallback:');
+    const row = el('div', 'probe-row');
+    row.appendChild(el('span', 'probe-name', f.name));
+    row.appendChild(el('span', isFallback ? 'probe-guess fallback' : 'probe-guess ok',
+      isFallback ? '规则兜底' : f.strategy));
+    row.appendChild(el('span', 'probe-marks', `${f.recordCount} 条 → ${f.chunkCount} 块`));
+    f.warnings.forEach((w) => row.appendChild(el('span', 'probe-warn', `⚠ ${w}`)));
+    box.appendChild(row);
+  });
+  if (res.missing && res.missing.length) {
+    box.appendChild(el('div', 'warn-box',
+      `${res.missing.length} 个文件未提交配方，已用规则解析器兜底：${res.missing.join('、')}`));
+  }
+  if (res.invalid && res.invalid.length) {
+    box.appendChild(el('div', 'warn-box',
+      `${res.invalid.length} 个配方不合法被跳过：${res.invalid.map((i) => `${i.file.name}(${i.error})`).join('；')}`));
+  }
+
+  log(`已按配方切分：${res.perFile.length} 个文件 → ${res.chunkCount} 块`, 'ok');
+  $('#btnMakeTask').textContent = '重新生成抽取任务包';
+  $('#agentStep2').hidden = true;
+  $('#agentStep3').hidden = false;
+  await refreshAgentStatus();
+  refreshNav();
+}
+
+async function copyProbeInstruction() {
+  if (!S.probeTask) return;
+  const r = S.probeTask;
+  const text = `请用记忆铸造厂（memory-forge）勘察这些记忆文件的结构：
+
+1. 读指令文件：${r.instructionsPath}
+2. 读 ${r.root}/samples 下的每个 .json（文件的头尾片段与结构统计），
+   判断每个文件该怎么切
+3. 为每个文件写一份切分配方到 ${r.root}/recipes 目录，
+   文件名把扩展名换成 .recipe.json
+
+写完之后回复「已勘察 N/${r.fileCount} 个文件」。
+
+命令行等价流程：
+forge probe-status ${r.root}
+forge split ${r.root} --out ./task1`;
+  try {
+    await navigator.clipboard.writeText(text);
+    log('探查指令已复制，可直接粘贴给 agent', 'ok');
+  } catch (err) {
+    log(`复制失败：${err.message}，请手动选中下方文本`, 'warn');
+  }
+}
+
 // ── Agent 驱动模式 ────────────────────────────────────────────
 
 /** 切换抽取执行方式 */
@@ -470,8 +642,16 @@ function setExecMode(mode) {
   refreshNav();
 }
 
-/** 生成任务包 */
+/** 生成抽取任务包 */
 async function makeTask() {
+  // 若已经按配方切分过，就用那份结果，不要退回规则解析重来
+  if (S.agentTask && S.agentTask.root && S.agentTask._fromRecipe) {
+    $('#agentStep2').hidden = false;
+    $('#agentStep3').hidden = false;
+    await refreshAgentStatus();
+    return log('已使用按配方切分的结果', 'warn');
+  }
+
   const valid = S.mode === 'trial' ? null : S.files.filter((f) => !f.error);
   if (S.mode !== 'trial' && !valid) return log('没有可处理的文件', 'err');
 
@@ -1397,6 +1577,13 @@ function bind() {
   });
 
   // Agent 模式
+  $('#btnMakeProbe').onclick = makeProbeTask;
+  $('#btnSplitByProbe').onclick = splitByProbe;
+  $('#btnCopyProbeInstruction').onclick = copyProbeInstruction;
+  $('#btnSkipProbe').onclick = () => {
+    log('已跳过探查，将用规则解析器切分。若发现内容丢失，可回头做探查。', 'warn');
+    $('#agentTaskTitle').textContent = '第 2 步 · 抽取任务';
+  };
   $('#btnMakeTask').onclick = makeTask;
   $('#btnAgentStatus').onclick = refreshAgentStatus;
   $('#btnAgentImport').onclick = importAgentResult;

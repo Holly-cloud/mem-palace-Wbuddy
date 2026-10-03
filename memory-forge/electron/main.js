@@ -444,6 +444,125 @@ function forceAllowed(rejected) {
   return rejected.every((r) => r.problems.every((p) => p.includes('超过') || p.includes('上限')));
 }
 
+// --- IPC：格式探查 -------------------------------------------------------
+
+/**
+ * 生成探查任务包 —— 让 agent 先勘察未知格式。
+ *
+ * 存在的意义：规则解析器面对 Codex 会话那种
+ * `{"content":[{"text":"..."}]}` 结构时，会只取到顶层字符串字段
+ * 而把真正有意义的内容整个丢掉。让能理解语义的一方先看一眼。
+ */
+ipcMain.handle('probe:makeTask', async (_e, { filePaths }) => {
+  const probe = require('../src/engine/probe');
+  const files = [];
+  const previews = [];
+
+  for (const p of filePaths || []) {
+    if (!fs.existsSync(p)) continue;
+    files.push({ path: p, name: path.basename(p) });
+    try {
+      const s = probe.sampleFile(p);
+      // 只把结构摘要送回界面（不送 head 内容，避免界面刷屏）
+      const marks = [];
+      if (s.jsonLineRate > 0.7) marks.push('JSONL');
+      if (s.roleMarkers?.role_user || s.roleMarkers?.chatgpt_mapping) marks.push('对话');
+      if (s.nestedContentLines > 0) marks.push('嵌套内容');
+      if (s.csvLike) marks.push(`CSV`);
+      if (s.yamlLikeKeys > 0 && s.indentedRatio > 0.2) marks.push('YAML');
+      if (s.timestampRatio > 0.4) marks.push('日志');
+      if (s.headingCount > 2) marks.push('Markdown');
+      previews.push({
+        name: s.name,
+        chars: s.chars,
+        ruleGuess: s.ruleGuess,
+        marks,
+        nestedContentLines: s.nestedContentLines,
+        csvLike: s.csvLike,
+        jsonLineRate: s.jsonLineRate,
+      });
+    } catch (err) {
+      previews.push({ name: path.basename(p), error: err.message });
+    }
+  }
+
+  if (!files.length) {
+    return { ok: false, error: '没有可探查的文件' };
+  }
+
+  const out = path.join(app.getPath('temp'), `forge-probe-${Date.now()}`);
+  const pkg = probe.writeProbeTask(out, { files, meta: {} });
+  return {
+    ok: true,
+    root: pkg.root,
+    fileCount: pkg.manifest.fileCount,
+    instructionsPath: pkg.instructionsPath,
+    instructions: fs.readFileSync(pkg.instructionsPath, 'utf8'),
+    manifest: pkg.manifest,
+    previews,
+    strategies: probe.STRATEGIES,
+  };
+});
+
+ipcMain.handle('probe:status', async (_e, { probeDir }) => {
+  const probe = require('../src/engine/probe');
+  try {
+    return probe.probeStatus(probeDir);
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+/**
+ * 按配方切分，生成抽取任务包。
+ */
+ipcMain.handle('probe:split', async (_e, { probeDir, chunkBudget }) => {
+  const probe = require('../src/engine/probe');
+  const splitter = require('../src/engine/splitByRecipe');
+  try {
+    const loaded = probe.loadRecipes(probeDir);
+    if (!loaded.ok) return { ok: false, error: loaded.error };
+    if (!loaded.recipes.length) {
+      return {
+        ok: false,
+        error: `没有可用配方。${loaded.missing.length} 个文件未提交探查结果，请让 agent 先完成探查。`,
+        missing: loaded.missing,
+      };
+    }
+
+    const built = splitter.buildChunksFromRecipes(
+      loaded.manifest.files, loaded,
+      { budget: chunkBudget || 6000 }
+    );
+    if (!built.chunks.length) {
+      return { ok: false, error: '切分后没有内容，请检查配方' };
+    }
+
+    const out = path.join(app.getPath('temp'), `forge-task-${Date.now()}`);
+    const pkg = agentmode.writeTaskPackage(out, {
+      chunks: built.chunks,
+      meta: {
+        sourceDesc: `${loaded.recipes.length} 个按探查配方切分的文件`,
+        style: 'auto',
+        existingSlots: [],
+      },
+    });
+
+    return {
+      ok: true,
+      root: pkg.root,
+      chunkCount: pkg.manifest.chunkCount,
+      instructionsPath: pkg.instructionsPath,
+      manifest: pkg.manifest,
+      perFile: built.perFile,
+      missing: loaded.missing.map((m) => m.name),
+      invalid: loaded.invalid,
+    };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
 // --- IPC：Agent 驱动模式 --------------------------------------------------
 
 /**

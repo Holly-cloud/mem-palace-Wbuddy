@@ -169,11 +169,30 @@
 
       <!-- Agent 模式 -->
       <div id="execAgent">
+        <div class="card" id="probeCard">
+          <h3>第 1 步 · 格式探查（可选）</h3>
+          <p class="card-lead">
+            Agent 记忆的格式千差万别。若不确定来源文件是否规整，先让 agent 勘察一遍 ——
+            它会为每个文件产出一份「切分配方」，再由引擎按配方切分。
+            常见的 Markdown / 日志可以跳过这步。
+          </p>
+          <div class="probe-result" id="probeResult"></div>
+          <div class="row gap">
+            <button class="btn" id="btnMakeProbe">生成探查任务包</button>
+            <button class="btn btn-sm" id="btnSplitByProbe" hidden>按配方切分</button>
+            <button class="btn btn-sm" id="btnSkipProbe">跳过，直接生成抽取任务包</button>
+          </div>
+          <div id="probeTaskPanel" hidden>
+            <div class="task-instruction" id="probeInstruction"></div>
+            <button class="btn btn-sm" id="btnCopyProbeInstruction">复制探查指令</button>
+          </div>
+        </div>
+
         <div class="card" id="agentTaskCard">
-          <h3>抽取任务</h3>
+          <h3 id="agentTaskTitle">第 2 步 · 抽取任务</h3>
           <ol class="steps-list">
             <li>
-              <strong>生成任务包</strong>
+              <strong>生成抽取任务包</strong>
               <p class="hint">把待分析文本切成标准分块，附带抽取规范</p>
               <button class="btn" id="btnMakeTask">生成任务包</button>
             </li>

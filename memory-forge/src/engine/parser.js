@@ -65,6 +65,27 @@ function detectFormat(filePath, text) {
     } catch (_) { /* 非 JSON 数组 */ }
   }
 
+  // YAML / TOML：顶层 key: 占比高 + 有缩进
+  const ymlLines = text.split(/\r?\n/).filter((l) => l.trim() && !/^\s*#/.test(l));
+  if (ymlLines.length >= 3) {
+    const topKeys = ymlLines.filter((l) => /^[a-zA-Z_][\w.\-]*\s*:/.test(l)).length;
+    const indented = ymlLines.filter((l) => /^\s{2,}/.test(l)).length;
+    if (topKeys >= 2 && indented / ymlLines.length > 0.2) return 'yaml';
+  }
+
+  // CSV / TSV：分隔符数量在多行间稳定
+  if (ymlLines.length >= 2) {
+    const first = ymlLines[0];
+    const delim = [',', '\t', ';'].map((d) => ({
+      d, n: (first.match(new RegExp(`\\${d}`, 'g')) || []).length,
+    })).sort((a, b) => b.n - a.n)[0];
+    if (delim && delim.n >= 2) {
+      const consistent = ymlLines.slice(0, 10)
+        .every((l) => (l.match(new RegExp(`\\${delim.d}`, 'g')) || []).length === delim.n);
+      if (consistent) return 'csv';
+    }
+  }
+
   return 'text';
 }
 
@@ -201,6 +222,36 @@ function splitLog(text) {
  * 把任意 JSON 值转为可读文本，并保留结构线索。
  * 不会盲目 stringify —— 那会让 LLM 读到一大坨无结构的字符。
  */
+/**
+ * 递归收集嵌套结构里的字符串叶子。
+ * @param {object} node       待遍历节点
+ * @param {Set<string>} skip  顶层已取过的键，不重复收集
+ * @param {number} depth
+ */
+function collectStrings(node, skip, depth, prefix = '') {
+  if (depth > 5 || node === null || node === undefined) return '';
+  if (Array.isArray(node)) {
+    return node
+      .map((item) => collectStrings(item, skip, depth + 1, prefix))
+      .filter(Boolean)
+      .join('\n');
+  }
+  if (typeof node !== 'object') return '';
+
+  const parts = [];
+  Object.entries(node).forEach(([k, v]) => {
+    if (!prefix && skip.has(k)) return;
+    const label = prefix ? `${prefix}.${k}` : k;
+    if (typeof v === 'string') {
+      if (v.trim()) parts.push(`${label}: ${v}`);
+    } else if (v && typeof v === 'object') {
+      const sub = collectStrings(v, skip, depth + 1, label);
+      if (sub) parts.push(sub);
+    }
+  });
+  return parts.join('\n');
+}
+
 function jsonToRecords(data, filePath) {
   const records = [];
   const base = path.basename(filePath);
@@ -222,13 +273,15 @@ function jsonToRecords(data, filePath) {
       const strVals = keys.filter((k) => typeof node[k] === 'string' && node[k].trim());
       if (strVals.length >= 1 && strVals.length >= keys.length * 0.5) {
         const rendered = strVals.map((k) => `${k}: ${node[k]}`).join('\n');
+        // 嵌套结构里的字符串同样不能丢（Codex 会话的 content[].text）
+        const nested = collectStrings(node, new Set(strVals), 0);
         const others = keys.filter((k) => !(typeof node[k] === 'string' && node[k].trim()));
         const extra = others
           .map((k) => `${k}: ${fmt(node[k])}`)
           .filter((s) => !s.endsWith(': {}') && !s.endsWith(': []') && !s.endsWith(': null'))
           .join('\n');
         records.push(
-          makeRecord(rendered + (extra ? `\n${extra}` : ''), pointer, {
+          makeRecord(rendered + (nested ? `\n${nested}` : '') + (extra ? `\n${extra}` : ''), pointer, {
             kind: 'json-object',
             keys: strVals,
           })
@@ -266,9 +319,28 @@ function parseJsonl(text) {
     try {
       const obj = JSON.parse(t);
       ok++;
-      const strVals = Object.entries(obj)
-        .filter(([, v]) => typeof v === 'string' && v.trim())
-        .map(([k, v]) => `${k}: ${v}`);
+      // 递归收集所有字符串叶子，而不是只取顶层字段。
+      // Codex/Claude 会话的内容常藏在 content[].text 这类嵌套结构里，
+      // 只取顶层会把真正有意义的内容丢掉。
+      const strVals = [];
+      (function collect(node, prefix, depth) {
+        if (depth > 6 || node === null || node === undefined) return;
+        if (typeof node === 'string') {
+          if (node.trim()) strVals.push(prefix ? `${prefix}: ${node}` : node);
+          return;
+        }
+        if (typeof node === 'number' || typeof node === 'boolean') return;  // 噪音字段
+        if (Array.isArray(node)) {
+          node.forEach((item) => collect(item, prefix, depth + 1));
+          return;
+        }
+        if (typeof node === 'object') {
+          Object.entries(node).forEach(([k, v]) => {
+            collect(v, prefix ? `${prefix}.${k}` : k, depth + 1);
+          });
+        }
+      })(obj, '', 0);
+
       records.push(
         makeRecord(
           strVals.length ? strVals.join('\n') : JSON.stringify(obj),
@@ -316,6 +388,14 @@ function parseContent(filePath, text) {
       case 'jsonl':
         records = parseJsonl(text);
         break;
+      case 'yaml':
+        // 兜底：按顶层键切。不做完整 YAML 解析（避免引入依赖），
+        // 需要精确处理缩进层级时应走 forge probe 的配方切分。
+        records = splitYamlFallback(text);
+        break;
+      case 'csv':
+        records = splitCsvFallback(text);
+        break;
       default:
         records = splitText(text);
     }
@@ -352,6 +432,74 @@ function parseContent(filePath, text) {
         : 0,
     },
   };
+}
+
+// --- YAML / CSV 兜底 ---------------------------------------------------
+// 这两个是「不探查时也别完全失效」的保底实现，能力弱于配方切分
+// （配方能按 agent 声明的字段映射渲染）。需要精确处理时请用 forge probe。
+
+function splitYamlFallback(text) {
+  const lines = text.split(/\r?\n/);
+  const records = [];
+  let buf = [];
+  let key = '';
+  let start = 1;
+  const flush = (end) => {
+    if (buf.join('\n').trim()) {
+      records.push(makeRecord(buf.join('\n'), `L${start}-${end}`, {
+        kind: 'yaml-section', section: key,
+      }));
+    }
+    buf = [];
+  };
+  lines.forEach((l, i) => {
+    const isTop = /^[a-zA-Z_][\w.\-]*\s*:/.test(l) || /^\[[^\]]+\]/.test(l);
+    if (isTop) {
+      if (buf.length) flush(i);
+      key = l.replace(/[:\s]/g, ' ').trim().slice(0, 60);
+      start = i + 1;
+    }
+    if (!buf.length && !isTop) start = i + 1;
+    buf.push(l);
+  });
+  flush(lines.length);
+  return records;
+}
+
+function splitCsvFallback(text) {
+  const lines = text.split(/\r?\n/).filter((l) => l.trim());
+  if (!lines.length) return [];
+  const counts = [',', '\t', ';', '|'].map((d) => ({
+    d, n: (lines[0].match(new RegExp(`\\${d}`, 'g')) || []).length,
+  })).sort((a, b) => b.n - a.n)[0];
+  if (!counts || counts.n < 1) return splitText(text);
+
+  const parseLine = (line) => {
+    const cells = [];
+    let cur = '';
+    let inQuote = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        if (inQuote && line[i + 1] === '"') { cur += '"'; i++; }
+        else inQuote = !inQuote;
+      } else if (ch === counts.d && !inQuote) { cells.push(cur.trim()); cur = ''; }
+      else cur += ch;
+    }
+    cells.push(cur.trim());
+    return cells;
+  };
+
+  const header = parseLine(lines[0]);
+  const records = [];
+  lines.slice(1).forEach((line, i) => {
+    const cells = parseLine(line);
+    const parts = [];
+    header.forEach((h, j) => { if (h && cells[j]) parts.push(`${h}: ${cells[j]}`); });
+    cells.slice(header.length).forEach((v, j) => { if (v) parts.push(`col${header.length + j + 1}: ${v}`); });
+    records.push(makeRecord(parts.join('\n'), `row ${i + 2}`, { kind: 'csv-row' }));
+  });
+  return records;
 }
 
 // --- 分块 ---------------------------------------------------------------

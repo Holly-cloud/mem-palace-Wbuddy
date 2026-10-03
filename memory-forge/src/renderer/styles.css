@@ -543,6 +543,36 @@ body {
 .chunk-src { flex: 1; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chunk-state { color: var(--text-3); font-size: 11px; flex-shrink: 0; }
 
+/* ── 格式探查 ───────────────────────────── */
+.card-lead { font-size: 12px; color: var(--text-2); margin-bottom: 12px; line-height: 1.65; }
+#probeCard { margin-bottom: 14px; }
+#probeResult:empty { display: none; }
+#probeResult { margin: 12px 0; }
+
+.probe-table {
+  display: flex; flex-direction: column; gap: 2px;
+  max-height: 200px; overflow-y: auto;
+  background: var(--surface-2); border-radius: var(--radius-sm); padding: 6px;
+}
+.probe-row {
+  display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+  font-size: 12px; padding: 5px 7px;
+}
+.probe-name { font-family: var(--mono); color: var(--text); flex-shrink: 0; max-width: 190px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.probe-guess { font-size: 11px; color: var(--text-3); flex-shrink: 0; }
+.probe-guess.ok { color: var(--teal); }
+.probe-guess.fallback { color: var(--amber); }
+.probe-marks { display: flex; gap: 4px; flex-wrap: wrap; flex: 1; }
+.probe-mark {
+  padding: 1px 7px; border-radius: 999px; font-size: 10px;
+  background: var(--teal-soft); color: var(--teal);
+}
+.probe-warn { font-size: 11px; color: var(--amber); flex-basis: 100%; }
+.probe-err { font-size: 11px; color: var(--red); }
+
+#probeTaskPanel { margin-top: 10px; }
+
 /* ── 底部导航 ───────────────────────────── */
 .navbar {
   display: flex; align-items: center; justify-content: space-between;

@@ -8,11 +8,12 @@
     "start:gpu": "electron . --disable-gpu --no-sandbox --in-process-gpu",
     "dev": "electron . --dev",
     "forge": "node bin/forge.js",
-    "test": "node test/run-tests.js && node test/e2e-real-files.js && node test/trial-mode.js && node test/trial-integration.js && node test/agent-mode.js",
+    "test": "node test/run-tests.js && node test/e2e-real-files.js && node test/trial-mode.js && node test/trial-integration.js && node test/agent-mode.js && node test/probe-mode.js",
     "test:engine": "node test/run-tests.js",
     "test:e2e": "node test/e2e-real-files.js",
     "test:trial": "node test/trial-mode.js && node test/trial-integration.js",
-    "test:agent": "node test/agent-mode.js"
+    "test:agent": "node test/agent-mode.js",
+    "test:probe": "node test/probe-mode.js"
   },
   "bin": {
     "forge": "bin/forge.js"

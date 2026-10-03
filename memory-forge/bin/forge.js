@@ -25,6 +25,8 @@ const parser = require(path.join(ENGINE, 'parser'));
 const merge = require(path.join(ENGINE, 'merge'));
 const agentmode = require(path.join(ENGINE, 'agentmode'));
 const sampler = require(path.join(ENGINE, 'sampler'));
+const probe = require(path.join(ENGINE, 'probe'));
+const splitByRecipe = require(path.join(ENGINE, 'splitByRecipe'));
 const { loadPalace, slotList } = require(path.join(ENGINE, 'palace'));
 const { TYPES, renderCard, cardFileName } = require(path.join(ENGINE, 'schema'));
 
@@ -43,7 +45,10 @@ function usage() {
 ${C.bold('Agent 驱动模式')}（无需配置任何模型）
 
   ${C.cyan('task')} <文件...> [选项]      生成抽取任务包
-  ${C.cyan('status')} <任务目录>          查看进度
+  ${C.cyan('probe')} <文件...> [选项]     生成格式探查任务包（格式不统一时先做这步）
+  ${C.cyan('probe-status')} <探查目录>    查看探查进度
+  ${C.cyan('split')} <探查目录> [选项]    按配方切分并生成抽取任务包
+  ${C.cyan('status')} <任务目录>          查看抽取进度
   ${C.cyan('import')} <任务目录> [选项]   导入结果并跑下游管线
   ${C.cyan('validate')} <结果文件>        校验单个结果 JSON
 
@@ -57,17 +62,26 @@ ${C.bold('task 选项')}
   --ratio <0-1>         浅尝模式的抽样比例（与 --count 二选一）
   --strategy <策略>     抽样策略：random | stratified | slot
 
+${C.bold('split 选项')}
+  --out <目录>          抽取任务包输出位置
+  --budget <字符数>     每块字符预算
+
 ${C.bold('import 选项')}
   --write <记忆库目录>  直接写入目标记忆库（默认只做校验与统计，不写盘）
   --json                以 JSON 输出结果，便于程序处理
 
+${C.bold('典型流程')}
+  ${C.dim('# 格式不统一时：先探查 → agent 写配方 → 按配方切分 → agent 抽取 → 导入')}
+  forge probe notes.md chat-export.json codex.jsonl
+  forge probe-status ./forge-probe-xxx
+  forge split ./forge-probe-xxx --out ./task1
+  forge import ./task1 --write ~/memory-palace
+
+  ${C.dim('# 格式已知（常见 md/log）时可跳过探查')}
+  forge task notes.md chat.log --out ./task1
+  forge import ./task1 --write ~/memory-palace
+
 ${C.bold('示例')}
-  ${C.dim('# 生成任务包')}
-  forge task notes.md chat.log --out /tmp/task1
-
-  ${C.dim('# agent 读 INSTRUCTIONS.md 逐块处理，结果写进 results/ 后导入')}
-  forge import /tmp/task1 --write ~/memory-palace
-
   ${C.dim('# 浅尝模式：先抽样 20 条试运行')}
   forge task --trial --palace ~/memory-palace --count 20 --out /tmp/trial
 `);
@@ -385,6 +399,155 @@ function cmdTypes() {
   console.log('');
 }
 
+// --- probe / split -------------------------------------------------------
+
+/**
+ * 探查：生成「这个文件该怎么切」的配方任务包。
+ *
+ * 这是抽取的前置步骤。规则解析器只认识几种常见格式，遇到
+ * Codex 会话那种 `content[].text` 的嵌套结构会静默丢掉真实内容，
+ * 所以先让 agent 看一眼。
+ */
+function cmdProbe(opts) {
+  const files = opts._;
+  if (!files.length) {
+    console.error(C.red('请指定至少一个要探查的文件'));
+    process.exit(1);
+  }
+  const missing = files.filter((f) => !fs.existsSync(f));
+  if (missing.length) {
+    console.error(C.red(`文件不存在：${missing.join(', ')}`));
+    process.exit(1);
+  }
+
+  const entries = files.map((p) => ({ path: p, name: path.basename(p) }));
+  const out = opts.out || path.join(process.cwd(), `forge-probe-${Date.now()}`);
+  const pkg = probe.writeProbeTask(out, { files: entries, meta: {} });
+
+  // 打印结构统计摘要 —— 用户/agent 想快速了解文件性质时看这里
+  console.log('');
+  console.log(C.bold('文件结构速览'));
+  pkg.manifest.files.forEach((f) => {
+    const s = probe.sampleFile(f.path);
+    const marks = [];
+    if (s.jsonLineRate > 0.7) marks.push('JSONL');
+    if (s.roleMarkers.role_user || s.roleMarkers.chatgpt_mapping) marks.push('对话');
+    if (s.nestedContentLines > 0) marks.push(C.yellow('嵌套内容'));
+    if (s.csvLike) marks.push(`CSV(${(s.csvColumns - 1)}列)`);
+    if (s.yamlLikeKeys > 0 && s.indentedRatio > 0.2) marks.push('YAML');
+    if (s.timestampRatio > 0.4) marks.push('时间戳');
+    if (s.headingCount > 2) marks.push('Markdown');
+    console.log(`  ${f.name.padEnd(26)} ${String(s.chars).padStart(8)} 字符  `
+      + `${marks.length ? marks.join(' ') : C.dim('结构不明显')}`);
+    console.log(`  ${''.padEnd(26)} 规则猜测: ${C.cyan(f.ruleGuess)}`
+      + (s.nestedContentLines > 0
+        ? C.yellow(`  ⚠ 检测到 ${s.nestedContentLines} 行含嵌套内容数组，规则解析会丢失`)
+        : ''));
+  });
+
+  console.log('');
+  console.log(C.green('✓ 探查任务包已生成'));
+  console.log(`  目录  ${pkg.root}`);
+  console.log(`  文件  ${pkg.manifest.fileCount} 个`);
+  console.log('');
+  console.log(C.bold('接下来：'));
+  console.log(`  1. 读 ${C.cyan(path.join(pkg.root, 'INSTRUCTIONS.md'))}`);
+  console.log(`  2. 读 ${C.cyan(path.join(pkg.root, 'samples') + '/*.json')}，为每个文件写一份切分配方`);
+  console.log(`     结果写入 ${C.cyan(path.join(pkg.root, 'recipes') + '/*.recipe.json')}`);
+  console.log(`  3. 跑 ${C.cyan(`forge split ${pkg.root} --out <任务目录>`)} 生成抽取任务包`);
+  console.log('');
+  console.log(C.dim(`  进度：forge probe-status ${pkg.root}`));
+  console.log('');
+}
+
+function cmdProbeStatus(opts) {
+  const dir = opts._[0];
+  if (!dir) { console.error(C.red('请指定探查任务目录')); process.exit(1); }
+  const st = probe.probeStatus(dir);
+  if (!st.ok) { console.error(C.red(st.error)); process.exit(1); }
+  console.log('');
+  console.log(C.bold('=== 探查进度 ==='));
+  console.log(`进度  ${C.cyan(`${st.done}/${st.total}`)} (${st.percent}%)`);
+  console.log('');
+  st.files.forEach((f) => {
+    const mark = f.state === 'ok' ? C.green('✓') : f.state === 'invalid' ? C.red('✗') : C.dim('○');
+    const detail = f.state === 'ok' ? C.cyan(f.strategy)
+      : f.state === 'invalid' ? f.error
+      : '未提交';
+    console.log(`  ${mark} ${f.id}  ${f.name.padEnd(26)} ${detail}`);
+  });
+  console.log('');
+}
+
+/**
+ * 切分：按配方生成抽取任务包。
+ *
+ * 配方里没给的文件退回规则解析器兜底，不丢数据。
+ */
+function cmdSplit(opts) {
+  const dir = opts._[0];
+  if (!dir) { console.error(C.red('请指定探查任务目录')); process.exit(1); }
+
+  const loaded = probe.loadRecipes(dir);
+  if (!loaded.ok) { console.error(C.red(loaded.error)); process.exit(1); }
+
+  if (loaded.missing.length) {
+    console.log(C.yellow(`⚠ ${loaded.missing.length} 个文件未提交配方，将用规则解析器兜底：`
+      + loaded.missing.map((m) => m.name).join('、')));
+  }
+  if (loaded.invalid.length) {
+    console.log(C.red(`✗ ${loaded.invalid.length} 个配方不合法，将被跳过：`));
+    loaded.invalid.forEach((iv) => console.log(`    ${iv.file.name}: ${iv.error}`));
+  }
+  if (!loaded.recipes.length) {
+    console.error(C.red('没有可用配方。请让 agent 先完成探查。'));
+    process.exit(1);
+  }
+
+  const { chunks, perFile } = splitByRecipe.buildChunksFromRecipes(
+    loaded.manifest.files, loaded,
+    { budget: Number(opts.budget) || 6000 }
+  );
+
+  if (!chunks.length) {
+    console.error(C.red('切分后没有内容，请检查配方'));
+    process.exit(1);
+  }
+
+  const out = opts.out || path.join(process.cwd(), `forge-task-${Date.now()}`);
+  const pkg = agentmode.writeTaskPackage(out, {
+    chunks,
+    meta: {
+      sourceDesc: `${loaded.recipes.length} 个按配方切分的文件`,
+      style: opts.style || 'auto',
+      existingSlots: [],
+    },
+  });
+
+  console.log('');
+  console.log(C.bold('=== 切分结果 ==='));
+  perFile.forEach((f) => {
+    const mark = f.strategy.startsWith('fallback:') ? C.yellow('兜底') : C.green('配方');
+    console.log(`  [${mark}] ${f.name.padEnd(24)} ${C.cyan(f.strategy.padEnd(16))} `
+      + `${f.recordCount} 条 → ${f.chunkCount} 块`);
+    f.warnings.forEach((w) => console.log(`         ${C.yellow('⚠ ' + w)}`));
+  });
+
+  console.log('');
+  console.log(C.green(`✓ 抽取任务包已生成：${pkg.root}`));
+  console.log(`  共 ${pkg.manifest.chunkCount} 块`);
+  console.log('');
+  console.log(C.dim('  下一步：让 agent 按 INSTRUCTIONS.md 处理 chunks/，结果写入 results/'));
+  console.log(C.dim(`  导入：forge import ${pkg.root}`));
+  console.log('');
+  console.log(C.bold('各文件结构（agent 可参考）'));
+  perFile.forEach((f) => {
+    console.log(`- ${f.name}：${f.strategy}（${f.recordCount} 条记录）`);
+    if (f.note) console.log(`  ${f.note}`);
+  });
+  console.log('');
+}
+
 // --- main ---------------------------------------------------------------
 
 function main() {
@@ -401,6 +564,9 @@ function main() {
   try {
     switch (cmd) {
       case 'task': cmdTask(opts); break;
+      case 'probe': cmdProbe(opts); break;
+      case 'probe-status': cmdProbeStatus(opts); break;
+      case 'split': cmdSplit(opts); break;
       case 'import': cmdImport(opts); break;
       case 'status': cmdStatus(opts); break;
       case 'validate': cmdValidate(opts); break;

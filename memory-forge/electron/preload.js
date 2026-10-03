@@ -57,6 +57,11 @@ contextBridge.exposeInMainWorld('forge', {
   agentImport: (payload) => ipcRenderer.invoke('agent:import', payload),
   agentWrite: (payload) => ipcRenderer.invoke('agent:write', payload),
 
+  // 格式探查（格式不统一时先让 agent 勘察）
+  probeMakeTask: (filePaths) => ipcRenderer.invoke('probe:makeTask', { filePaths }),
+  probeStatus: (probeDir) => ipcRenderer.invoke('probe:status', { probeDir }),
+  probeSplit: (payload) => ipcRenderer.invoke('probe:split', payload),
+
   // palace
   loadPalace: (root) => ipcRenderer.invoke('palace:load', { root }),
 

@@ -6,9 +6,10 @@
 
 **内置大语言模型能力** —— 默认交给当前 agent 执行，**无需配置任何模型或 API Key**。
 
-**两种运行模式**：
+**三种运行模式**：
 - **完整模式** — 处理你选定的文件，全量输出并可导出
 - **浅尝模式** — 从已有记忆库抽样试运行，只读不写，先看效果再决定是否全量
+- **探查模式** — 格式不统一时，先让 agent 勘察结构再切分
 
 ---
 
@@ -17,8 +18,9 @@
 | | |
 |---|---|
 | **零配置** | 不需要装模型、不需要 API Key。抽取交给当前 agent 用它自己的模型完成 |
+| **格式探查** | Agent 记忆格式千差万别，让 agent 先勘察结构、产出切分配方，避免规则解析丢内容 |
 | **两种执行方式** | 默认 agent 驱动；也可直连 Ollama / OpenAI 兼容端点 / Claude |
-| **格式不限** | Markdown / 纯文本 / JSON / JSONL / 日志，自动识别，每条记录保留来源位置 |
+| **格式不限** | Markdown / 纯文本 / JSON / JSONL / 日志 / YAML / CSV / 对话导出 / Codex 会话 |
 | **浅尝模式** | 从真实记忆库抽样试运行，全程只读，确认后再转全量 |
 | **冲突可见** | 与已有记忆库对比，同一 slot 的矛盾会被检出并要求你裁决，不自动决定 |
 | **格式可靠** | 输出与 memory-palace 的 schema 严格对齐，导出的文件可被 CLI 直接读取 |
@@ -31,7 +33,7 @@
 ```bash
 npm install
 ./start.sh          # 启动 GUI
-npm test            # 全部 302 项测试
+npm test            # 全部 390 项测试
 ```
 
 **建议用 `start.sh`**。它处理两个常见障碍：
@@ -41,6 +43,143 @@ npm test            # 全部 302 项测试
 
 首次使用建议直接体验 agent 模式：进入第 3 步点「生成任务包」，把生成的指令粘给你的 agent 即可。
 如果你更想走自建模型，第 3 步右上角可切到「直连模型 API」，点「探测可用模型」会自动列出 Ollama 已安装的模型。
+
+---
+
+## 格式探查（格式不统一时）
+
+### 为什么需要这一步
+
+Agent 记忆的格式远比「Markdown / JSON / 日志 / 纯文本」四种能概括。规则解析器只能靠正则猜边界，
+遇到没见过的结构就会出问题。举个具体例子 —— Codex / Claude Code 的会话行长这样：
+
+```jsonl
+{"type":"message","role":"user","content":[{"type":"input_text","text":"帮我重构记忆模块"}]}
+```
+
+规则解析器只取顶层字符串字段，于是留下 `type=message`、`role=user`，
+而**真正有意义的内容「帮我重构记忆模块」藏在数组里，被完全丢弃** —— 而且是静默丢弃，
+不报错、不告警。这类结构没法用正则穷举。
+
+实测四种常见格式下规则解析的表现：
+
+| 文件 | 规则判定 | 结果 |
+|---|---|---|
+| `chatgpt-export.json` | json | 记录混进 role/timestamp，丢失「谁说的话」 |
+| `codex-session.jsonl` | jsonl | **内容全部丢失**（在 `content[].text` 里） |
+| `settings.yaml` | text | 完全不识别 |
+| `memories.csv` | text | 表头与数据行混在一起 |
+
+### 职责边界
+
+```
+agent 判断「这是什么结构、该怎么切」→ 产出配方（recipe）
+引擎执行「按配方切分」          → 保证确定性与可复现
+```
+
+agent 给的是**声明式配方**而不是代码。这样切分过程可审计、可复现，
+agent 也不会因为写错代码而破坏流程。判断错时改配方即可，不必重跑任何模型。
+
+### 用法
+
+```bash
+# 1. 生成探查任务包（含文件采样 + 结构统计）
+forge probe codex.jsonl chat-export.json memories.csv settings.yaml
+
+# 2. agent 读 INSTRUCTIONS.md 与 samples/*.json，为每个文件写配方到 recipes/
+
+# 3. 按配方切分，生成抽取任务包
+forge split ./forge-probe-xxx --out ./task1
+
+# 4. 后续与常规抽取流程相同
+forge import ./task1 --write ~/memory-palace
+```
+
+辅助命令：
+
+```bash
+forge probe-status ./forge-probe-xxx   # 看进度
+```
+
+GUI 里在第 3 步有「格式探查（可选）」卡片，点「生成探查任务包」即可。
+
+**格式已知时可以跳过这步** —— 常见的 Markdown / 日志直接 `forge task` 即可。
+
+### 探查会给 agent 看什么
+
+不给全文，只给**结构采样**（大文件会撑爆上下文，而判断格式靠结构特征而非具体内容）：
+
+- 头部 3000 字符 + 尾部 1200 字符
+- 结构统计：`jsonLineRate`（多少行是合法 JSON）、`nestedContentLines`（含嵌套内容数组的行数）、
+  `roleMarkers`（对话角色出现次数）、`csvLike`、`yamlLikeKeys`、`timestampRatio`、`headingCount`
+- 规则解析器的猜测（供参考或推翻）
+
+命令行还会打印一份速览，并对**可能丢内容**的文件告警：
+
+```
+codex-session.jsonl    253 字符  JSONL 对话 嵌套内容
+                       规则猜测: jsonl  ⚠ 检测到 2 行含嵌套内容数组，规则解析会丢失
+```
+
+### 配方格式
+
+```json
+{
+  "file": "codex-session.jsonl",
+  "strategy": "jsonl",
+  "fields": { "角色": "role", "内容": "content[].text" },
+  "includeMeta": ["type"],
+  "note": "Codex 会话格式，真实内容在 content[].text 数组里"
+}
+```
+
+`fields` 的路径支持 `a.b` 与 `a[].text`（取数组内每个元素的 text）。
+**只有显式写 `[]` 才展开数组** —— 不带 `[]` 的路径保持常规取值行为，字段类型不可预知时也不丢数据。
+
+可用策略：`lines` / `jsonl` / `json_array` / `conversation` / `record_separator` /
+`markdown` / `yaml` / `csv` / `log` / `blank_line` / `whole`
+
+### 切分效果对比
+
+同一个 Codex 会话文件，两种方式的关键信息保留情况：
+
+```
+关键信息是否保留：
+  + "帮我重构"   规则:无  配方:有      ← 规则解析完全丢弃的内容
+  = "结论先行"   规则:有  配方:有
+```
+
+配方切分在保证不丢内容的前提下，还能按 agent 指定的字段映射把结构渲染得更清晰：
+
+```
+角色: user
+内容: 帮我重构记忆模块
+type: message
+```
+
+### 未提交配方的兜底
+
+没有提交配方、或配方不合法时，该文件自动退回规则解析器，并在输出里明确标注：
+
+```
+[配方]   codex-session.jsonl   jsonl        3 条 → 1 块
+[兜底]   chat.log              fallback:log 42 条 → 3 块   ⚠ 未提交探查配方，已用规则解析器兜底
+```
+
+不丢数据，也不静默 —— 你会明确看到哪些文件走了兜底。
+
+### 规则解析器也做了增强
+
+探查不是唯一防线。即使跳过探查，规则解析器也比之前强：
+
+| 改进 | 效果 |
+|---|---|
+| JSON/JSONL 递归收集字符串叶子 | `content[].text` 这类嵌套内容不再丢失 |
+| 新增 YAML / CSV 格式识别 | 配置文件与记忆表不再被当成纯文本 |
+| CSV 正确处理引号与分隔符 | `含,逗号`、`含"引号"`、TSV 都能解析 |
+
+这意味着：即使不做探查，Codex 会话的内容也不会再被静默丢弃（路径会以
+`content.text: ...` 的形式呈现，比配方切分粗糙，但信息完整）。
 
 ---
 
@@ -378,11 +517,13 @@ memory-forge/
 │   └── preload.js         安全桥：白名单 API + webUtils 拖拽
 ├── src/
 │   ├── engine/            纯 Node 引擎，无 Electron 依赖，可独立测试
-│   │   ├── parser.js      格式识别、切分、分块
+│   │   ├── parser.js      格式识别、切分、分块（探查的兜底）
 │   │   ├── schema.js      卡片 schema、归一化、校验、渲染
 │   │   ├── llm.js         多后端客户端、重试、JSON 容错
 │   │   ├── extract.js     提示词与抽取管线（直连模式）
 │   │   ├── agentmode.js   agent 模式：任务包生成、结果导入、指令生成
+│   │   ├── probe.js       探查模式：结构探测、配方校验、配方加载
+│   │   ├── splitByRecipe.js 配方驱动的切分执行器（11 种策略）
 │   │   ├── merge.js       去重、冲突检测、基线对比、裁决
 │   │   ├── sampler.js     浅尝模式：路径校验、抽样、卡片还原、报告
 │   │   └── palace.js      读取已有记忆库
@@ -395,7 +536,8 @@ memory-forge/
     ├── e2e-real-files.js    20 项真实文件端到端
     ├── trial-mode.js        74 项浅尝模式单元测试
     ├── trial-integration.js 37 项浅尝模式集成测试
-    └── agent-mode.js        60 项 agent 模式测试
+    ├── agent-mode.js        60 项 agent 模式测试
+    └── probe-mode.js        88 项探查模式测试
 ```
 
 **引擎与界面完全解耦**：`src/engine/` 不依赖 Electron，可在纯 Node 下测试与复用。
@@ -403,6 +545,10 @@ memory-forge/
 **agent 模式的位置**：`agentmode.js` 只负责「生成任务包 + 导入结果」，
 中间的理解工作由 agent 完成。产出的卡片走的是与直连模式**完全相同**的下游管线
 （`dedupe → 冲突检测 → 审查 → 导出`），保证两种模式的输出口径一致。
+
+**探查模式的位置**：`probe.js` 只负责「给 agent 看结构 + 收配方」，
+`splitByRecipe.js` 负责「按配方执行切分」。两者都不涉及抽取逻辑，
+产物与 `parser.js` 产出的 Record 同构，因此后续流程完全一致。
 
 **浅尝模式的位置**：`sampler.js` 只负责「取样与还原」，产出与 `parseContent` 同构的
 Record[]，之后的分块、抽取、去重、冲突检测、报告全部是既有代码。
@@ -423,20 +569,23 @@ Record[]，之后的分块、抽取、去重、冲突检测、报告全部是既
 ## 测试
 
 ```bash
-npm test              # 全部 302 项
+npm test              # 全部 390 项
 npm run test:engine   # 111 项引擎测试
 npm run test:e2e      # 20 项真实文件端到端
 npm run test:trial    # 111 项浅尝模式（74 单元 + 37 集成）
 npm run test:agent    # 60 项 agent 驱动模式
+npm run test:probe    # 88 项格式探查模式
 ```
 
-引擎测试覆盖：格式识别（5 种）、解析切分、JSON 容错解析、schema 归一化与校验、渲染往返一致性、去重、冲突检测、基线对比、裁决应用、ID 分配、palace 读取、相似度算法，以及用 mock LLM 跑的完整管线。
+引擎测试覆盖：格式识别、解析切分、JSON 容错解析、schema 归一化与校验、渲染往返一致性、去重、冲突检测、基线对比、裁决应用、ID 分配、palace 读取、相似度算法，以及用 mock LLM 跑的完整管线。
 
 端到端测试用真实的 md/log/json/jsonl/txt 五种文件，跑通「解析 → 抽取 → 去重 → 冲突检出 → 裁决 → 分配 ID → 写盘 → 回读验证」，并确认回读后的 slot 口径与 `palace doctor` 一致。
 
-浅尝模式测试覆盖抽样三种策略、可复现性、全部边界错误码、只读保证（目录快照逐文件比对）、写入守卫，以及「试运行与完整模式分块结构同构」——这是管线复用的直接证据。
+浅尝模式测试覆盖抽样三种策略、可复现性、全部边界错误码、只读保证（目录快照逐文件比对）、写入守卫，以及「试运行与完整模式分块结构同构」。
 
-agent 模式测试覆盖任务包结构、指令内容质量（正例反例/别名/中文触发词要求）、八类输出容错、进度追踪、部分提交、以及「agent 产出走同一套下游管线且不改动记忆库」。
+agent 模式测试覆盖任务包结构、指令内容质量、八类输出容错、进度追踪、部分提交，以及「agent 产出走同一套下游管线且不改动记忆库」。
+
+探查模式测试覆盖结构探测（JSONL/对话/CSV/YAML/日志/Markdown 六类特征）、JSON 路径取值（8 种形态含 `a[].text`）、配方切分（11 种策略含 CSV 引号与 TSV）、配方校验、探查任务包、配方→分块→抽取任务包链路、兜底行为，以及全流程只读保证。
 
 ---
 
@@ -446,13 +595,15 @@ agent 模式测试覆盖任务包结构、指令内容质量（正例反例/别�
 
 | 缺陷 | 症状 | 根因 |
 |---|---|---|
-| **抽取内容被截断** | 完整模式只处理每段前 240 字 | `fs:readFiles` 只返回 `preview`，`buildChunks` 又重新 `parseContent` 读盘——整段内容在抽取前就丢了 |
+| **嵌套内容静默丢失** | Codex 会话的真实内容整个消失 | 规则解析只取顶层字符串字段，`content[].text` 被丢弃 |
+| **抽取内容被截断** | 完整模式只处理每段前 240 字 | `fs:readFiles` 只返回 `preview` |
 | 日志被误判为 JSON | `[2026-01-01 ...]` 行首方括号触发 JSON 检测 | JSON 嗅探排在了日志嗅探之前 |
-| 分块文本为空 | 抽取结果 0 张 | `chunk.text` 字段从未赋值，只有 `records` |
-| 小预算死循环 | 2GB 堆溢出 | `sliceLong` 在 `budget=1` 时步长为 0，循环不推进 |
-| JSON 解析漏数组 | 输出前面有解释文字时抓不到数组 | 扫描器固定先找 `{`，跳过了更早的 `[` |
-| 抽样数量 0 被当默认值 | 填 0 却拿到 1 条 | `Number(count) || 20` 把 0 当假值 |
-| markdown section 被覆盖 | 所有记录共享最后一个标题 | `forEach` 无条件赋值 |
+| 分块文本为空 | 抽取结果 0 张 | `chunk.text` 字段从未赋值 |
+| 小预算死循环 | 2GB 堆溢出 | `sliceLong` 在 `budget=1` 时步长为 0 |
+| JSON 解析漏数组 | 输出前面有解释文字时抓不到数组 | 扫描器固定先找 `{`，跳过更早的 `[` |
+| 数组路径取值过度 | `content`、`a.b.c`、`tags` 全返回 null | `pickPath` 把不带 `[]` 的路径也当数组展开 |
+| CSV 表头被当数据 | 抽取阶段多出一条「表头是 xxx」的无用记忆 | `splitCsv` 把表头行 push 进了 records |
+| `collectStrings` 类型错误 | JSON 解析抛 `skip.has is not a function` | 传了数组而非 Set |
 
 ---
 
