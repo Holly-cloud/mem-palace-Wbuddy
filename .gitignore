@@ -39,6 +39,9 @@ Thumbs.db
 *.swp
 *~
 
+# AI 助手的私有工作日志（非项目产物）
+.workbuddy/
+
 # 密钥与本地配置 —— 绝不入库
 .env
 .env.*
