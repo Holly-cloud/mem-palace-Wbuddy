@@ -587,8 +587,7 @@ tools.import_results = ({ taskId, palaceRoot, write, dryRun }) => {
     report.notice = write
       ? '浅尝模式不会写入文件。确认结果满意后，请用 forge_task_start 处理完整内容。'
       : '浅尝模式只预览，不写盘。';
-  } else if (allowWrite && palaceRoot) {
-    const base = loadPalace(palaceRoot);
+  } else if (allowWrite && palaceRoot) {    const base = loadPalace(palaceRoot);
     const assigned = merge.assignIds(dd.kept, (base.maxSeq || 0) + 1, base.ids);
     let written = 0;
     const failed = [];
@@ -999,15 +998,18 @@ const TOOL_DEFS = [
   {
     name: 'forge_import_results',
     description:
-      '导入全部结果并跑下游管线（去重 → 冲突检测 → 与已有记忆对比）。' +
-      '默认只统计不写盘；确认无误后传 write=true 与 palaceRoot 才会写入记忆库。' +
-      '浅尝任务（forge_trial_start 创建）即使传 write 也不会写 —— 工具会返回 notice 说明。' +
+      '导入全部结果并跑下游管线（去重 → 冲突检测 → 与已有记忆对比），' +
+      '传 write=true 与 palaceRoot 时把卡片写入记忆库。' +
+      '★ 请始终用这个工具写盘，不要自己往 cards/ 目录手写 .md 文件 —— ' +
+      '手写会漏掉字段、可能写错 frontmatter 分隔符（\\\\--- 会让整张卡读不出来），' +
+      '而且不会被计入 ID 序列。工具会用 renderCard 渲染，保证格式与 schema 一致。' +
+      '浅尝任务（forge_trial_start 创建）即使传 write 也不会写 —— 会返回 notice 说明。' +
       '返回会列出所有冲突 slot —— 工具不会替你判断哪条为真，需要你或用户裁决。',
     inputSchema: {
       type: 'object',
       properties: {
         taskId: { type: 'string' },
-        palaceRoot: { type: 'string', description: '已有记忆库目录，用于对比' },
+        palaceRoot: { type: 'string', description: '记忆库目录（memory-palace 根目录）' },
         write: { type: 'boolean', description: '是否写入记忆库，默认 false' },
       },
       required: ['taskId'],

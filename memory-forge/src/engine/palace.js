@@ -28,11 +28,17 @@ function parseScalar(raw) {
 }
 
 function parseFrontmatter(text) {
-  if (!text.startsWith('---')) return null;
+  if (!text) return null;
+  // 容错：Agent 手写时偶尔会把分隔符转义成 \---（Markdown 渲染习惯），
+  // 或者用全角/带空格的形式。严格匹配会让整张卡读不出来 ——
+  // 数据明明完好，却因为首行一个字符读不出来，这是最坏的一类失败。
+  // 这里只要求「一行里只有分隔符（可带转义反斜杠与空白）」。
+  if (!/^[ \t]*\\?---[ \t]*$/.test(text.split(/\r?\n/, 1)[0])) return null;
+
   const lines = text.split(/\r?\n/);
   let end = -1;
   for (let i = 1; i < lines.length; i++) {
-    if (lines[i].trim() === '---') { end = i; break; }
+    if (/^[ \t]*\\?---[ \t]*$/.test(lines[i])) { end = i; break; }
   }
   if (end === -1) return null;
 
@@ -62,7 +68,7 @@ function loadPalace(rootDir) {
     return { cards, ids, maxSeq, problems: [{ file: rootDir, problem: '目录不存在' }], found: false };
   }
 
-  const walk = (dir) => {
+  const walk = (dir, depth = 0) => {
     let entries = [];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -74,11 +80,15 @@ function loadPalace(rootDir) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         if (['.palace', '.git', 'node_modules', '__pycache__'].includes(entry.name)) continue;
-        walk(full);
+        walk(full, depth + 1);
         continue;
       }
       if (!entry.name.endsWith('.md')) continue;
       if (entry.name === 'README.md') continue;
+      // 只检查 cards/ 下的 .md。库根目录里 agent 常放收录清单、
+      // 报告之类的辅助文档 —— 它们不是记忆卡，缺 frontmatter 是正常的，
+      // 报进 problems 只会淹没真正的问题。
+      if (depth === 0) continue;
 
       let text;
       try {

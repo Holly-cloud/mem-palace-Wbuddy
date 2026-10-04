@@ -40,7 +40,7 @@ npm install
 「自动写入配置」→ 在 hermes 会话里 `/reload-mcp`。
 
 ```bash
-npm test            # 全部 573 项测试
+npm test            # 全部 596 项测试
 ```
 
 ---
@@ -87,7 +87,35 @@ mcp_servers:
 
 Windows 上 `AppData/Roaming/hermes` 是 Electron 运行时数据（Cache/Preferences），**不是配置目录**。检测逻辑已按平台区分，实机验证过。
 
-### 12 个工具
+### 卡片格式容错
+
+Agent 可能绕过工具自己手写 `.md` 放进 `cards/`。这种偏差读取端能救：
+
+| 偏差 | 处理 |
+|---|---|
+| 分隔符写成 `\---`（Markdown 转义习惯） | 接受 |
+| 分隔符带前导/尾随空白 | 接受 |
+| CRLF 行尾 | 接受 |
+| 字段值有尾随空格 | 接受 |
+| 缺 `id` 字段 | 标记为结构问题（不静默吞掉） |
+| 无闭合分隔符 | 判为无 frontmatter |
+
+但**更该做的是别让手写发生**：`forge_import_results` 的工具描述里明确写了
+
+> ★ 请始终用这个工具写盘，不要自己往 `cards/` 目录手写 .md 文件 —— 手写会漏掉字段、
+> 可能写错 frontmatter 分隔符，而且不会被计入 ID 序列。
+
+Agent 读得懂这段话。真实试用中它确实绕过了工具（159 张卡全部手写，`source` 字段无 `forge:` 标记），所以这段提示是必要的。
+
+### 诊断脚本
+
+```bash
+npm run diagnose:palace -- <记忆库目录>
+```
+
+判定每张卡是工具写的还是手写的（与 `renderCard` 输出逐字比对），
+并统计手写特征（`tags` 用「, 」分隔、`source` 无 `forge:` 标记等）。
+用来快速判断一批产物是否经过了工具的校验。
 
 | 分组 | 工具 | 用途 |
 |---|---|---|
@@ -763,7 +791,7 @@ Record[]，之后的分块、抽取、去重、冲突检测、报告全部是既
 ## 测试
 
 ```bash
-npm test              # 全部 573 项
+npm test              # 全部 596 项
 npm run test:engine   # 111 项引擎测试
 npm run test:e2e      # 20 项真实文件端到端
 npm run test:trial    # 111 项浅尝模式（74 单元 + 37 集成）
@@ -771,6 +799,7 @@ npm run test:agent    # 60 项 agent 驱动模式
 npm run test:probe    # 90 项格式探查模式
 npm run test:mcp      # 140 项 MCP 集成（真实 JSON-RPC over stdio）
 npm run test:trial:mcp # 41 项浅尝模式经 MCP 的完整链路
+npm run test:handwritten # 23 项手写卡片容错
 ```
 
 引擎测试覆盖：格式识别、解析切分、JSON 容错解析、schema 归一化与校验、渲染往返一致性、去重、冲突检测、基线对比、裁决应用、ID 分配、palace 读取、相似度算法，以及用 mock LLM 跑的完整管线。
@@ -808,8 +837,9 @@ MCP 集成测试走**真实 JSON-RPC over stdio**（不用内部调用绕过协�
 | 数组路径取值过度 | `content`、`a.b.c`、`tags` 全返回 null | `pickPath` 把不带 `[]` 的路径也当数组展开 |
 | CSV 表头被当数据 | 抽取阶段多出一条「表头是 xxx」的无用记忆 | `splitCsv` 把表头行 push 进了 records |
 | `collectStrings` 类型错误 | JSON 解析抛 `skip.has is not a function` | 传了数组而非 Set |
+| **手写卡静默失效** | 6 张卡因 frontmatter 写成 `\---` 完全读不出来 | 解析器只认裸 `---`。Agent 手写时把 YAML 分隔符当 Markdown 转义了 |
 
-**前三条是实机适配 hermes 时才发现的** —— 文档里写的是 `~/.hermes`，而 Windows 上根本不是那个路径。这些问题靠读文档发现不了，只能真装一遍。
+**第一、五、六条是实机适配 hermes 时才发现的** —— 文档里写的是 `~/.hermes`，而 Windows 上根本不是那个路径。而「手写卡静默失效」是**真实试用产物里暴露的**：159 张卡中有 6 张因为一个字符读不出来，且体检报告只说「缺少 frontmatter」，看不出原因。这类失败最坏——数据明明完好，却因为格式问题被当成不存在。
 
 ---
 
